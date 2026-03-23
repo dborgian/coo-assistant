@@ -9,7 +9,7 @@ const envSchema = z.object({
   // GramJS (userbot for monitoring)
   TELEGRAM_API_ID: z.coerce.number().default(0),
   TELEGRAM_API_HASH: z.string().default(""),
-  TELEGRAM_SESSION_NAME: z.string().default("coo_userbot"),
+  TELEGRAM_SESSION_STRING: z.string().default(""),
   MONITORED_CHAT_IDS: z
     .string()
     .default("[]")

@@ -1,14 +1,16 @@
+import { createInterface } from "node:readline/promises";
+import { stdin, stdout } from "node:process";
 import type { Bot } from "grammy";
+import { TelegramClient } from "telegram";
+import { NewMessage, type NewMessageEvent } from "telegram/events/index.js";
+import { StringSession } from "telegram/sessions/index.js";
 import { agent } from "../core/agent.js";
 import { config } from "../config.js";
 import { db } from "../models/database.js";
 import { messageLogs } from "../models/schema.js";
 import { logger } from "../utils/logger.js";
 
-// GramJS userbot placeholder
-// TODO: Implement GramJS (telegram package) userbot for chat monitoring
-// GramJS is the TypeScript equivalent of Python's Telethon
-
+let userbot: TelegramClient | null = null;
 let botRef: Bot | null = null;
 
 export async function startUserbot(bot: Bot): Promise<boolean> {
@@ -19,38 +21,79 @@ export async function startUserbot(bot: Bot): Promise<boolean> {
     return false;
   }
 
-  // TODO: Initialize GramJS TelegramClient
-  // const { TelegramClient } = await import("telegram");
-  // const { StringSession } = await import("telegram/sessions");
-  //
-  // const client = new TelegramClient(
-  //   new StringSession(savedSession),
-  //   config.TELEGRAM_API_ID,
-  //   config.TELEGRAM_API_HASH,
-  //   { connectionRetries: 5 }
-  // );
-  //
-  // await client.start({ ... });
-  //
-  // client.addEventHandler(async (event) => {
-  //   // Process new messages from monitored chats
-  //   await handleNewMessage(event);
-  // }, new NewMessage({}));
+  const session = new StringSession(config.TELEGRAM_SESSION_STRING);
 
-  logger.info("Chat monitoring — GramJS integration pending setup");
-  return false;
+  userbot = new TelegramClient(
+    session,
+    config.TELEGRAM_API_ID,
+    config.TELEGRAM_API_HASH,
+    { connectionRetries: 5 },
+  );
+
+  // If no saved session, do interactive login
+  if (!config.TELEGRAM_SESSION_STRING) {
+    logger.info("No saved session — starting interactive login...");
+
+    const rl = createInterface({ input: stdin, output: stdout });
+
+    await userbot.start({
+      phoneNumber: async () => {
+        const phone = await rl.question("Enter your phone number: ");
+        return phone;
+      },
+      password: async () => {
+        const pwd = await rl.question("Enter your 2FA password (or press Enter if none): ");
+        return pwd;
+      },
+      phoneCode: async () => {
+        const code = await rl.question("Enter the code you received: ");
+        return code;
+      },
+      onError: (err) => {
+        logger.error({ err }, "GramJS login error");
+      },
+    });
+
+    rl.close();
+
+    // Print session string so user can save it to .env
+    const savedSession = userbot.session.save() as unknown as string;
+    logger.info("Login successful! Save this session string to your .env file as TELEGRAM_SESSION_STRING:");
+    console.log("\n===== SESSION STRING (copy this) =====");
+    console.log(savedSession);
+    console.log("===== END SESSION STRING =====\n");
+  } else {
+    await userbot.connect();
+  }
+
+  logger.info("GramJS userbot connected");
+
+  // Register event handler for new messages
+  userbot.addEventHandler(
+    (event: NewMessageEvent) => {
+      onNewMessage(event).catch((err) =>
+        logger.error({ err }, "Error processing message"),
+      );
+    },
+    new NewMessage({}),
+  );
+
+  logger.info(
+    { monitoredChats: config.MONITORED_CHAT_IDS },
+    "Chat monitoring active",
+  );
+
+  return true;
 }
 
-export async function handleNewMessage(
-  chatId: number,
-  senderName: string,
-  chatTitle: string,
-  messageText: string,
-  senderId?: number,
-): Promise<void> {
-  if (!messageText.trim()) return;
+async function onNewMessage(event: NewMessageEvent): Promise<void> {
+  const message = event.message;
+  const chatId = message.chatId?.toJSNumber?.() ?? Number(message.chatId);
 
-  // Only process messages from monitored chats
+  // Skip our own messages
+  if (message.out) return;
+
+  // Only process messages from monitored chats (if list is configured)
   if (
     config.MONITORED_CHAT_IDS.length &&
     !config.MONITORED_CHAT_IDS.includes(chatId)
@@ -58,6 +101,33 @@ export async function handleNewMessage(
     return;
   }
 
+  const messageText = message.text ?? "";
+  if (!messageText.trim()) return;
+
+  // Get sender and chat info
+  const sender = await message.getSender();
+  const chat = await message.getChat();
+
+  const senderName =
+    (sender && "firstName" in sender ? sender.firstName : null) ??
+    (sender && "title" in sender ? sender.title : null) ??
+    "Unknown";
+  const chatTitle =
+    (chat && "title" in chat ? chat.title : null) ?? senderName;
+  const senderId = sender && "id" in sender
+    ? Number(sender.id)
+    : undefined;
+
+  await handleNewMessage(chatId, senderName, chatTitle, messageText, senderId);
+}
+
+async function handleNewMessage(
+  chatId: number,
+  senderName: string,
+  chatTitle: string,
+  messageText: string,
+  senderId?: number,
+): Promise<void> {
   logger.info(
     { chat: chatTitle, sender: senderName, preview: messageText.slice(0, 80) },
     "New message detected",
@@ -110,7 +180,10 @@ export async function handleNewMessage(
 }
 
 export async function stopUserbot(): Promise<void> {
-  // TODO: Disconnect GramJS client
+  if (userbot) {
+    await userbot.disconnect();
+    userbot = null;
+    logger.info("GramJS userbot disconnected");
+  }
   botRef = null;
-  logger.info("Chat monitoring stopped");
 }
