@@ -1,0 +1,60 @@
+import { createBot } from "./bot/telegram-bot.js";
+import { mcpManager } from "./core/mcp-client.js";
+import { setupSchedules, stopSchedules } from "./core/scheduler.js";
+import { initDb } from "./models/database.js";
+import { checkUpcomingEvents } from "./services/calendar-sync.js";
+import { checkPendingMessages } from "./services/chat-monitor.js";
+import { generateAndSendDailyReport } from "./services/daily-reporter.js";
+import { checkAndSendReminders } from "./services/task-reminder.js";
+import { startUserbot, stopUserbot } from "./bot/monitors.js";
+import { logger } from "./utils/logger.js";
+
+async function main(): Promise<void> {
+  logger.info("Starting COO Assistant...");
+
+  // Initialize database
+  initDb();
+  logger.info("Database initialized");
+
+  // Load MCP config
+  mcpManager.loadConfig();
+
+  // Create Telegram bot
+  const bot = createBot();
+
+  // Setup scheduled jobs
+  setupSchedules({
+    dailyReport: () => generateAndSendDailyReport(bot),
+    chatMonitor: () => checkPendingMessages(bot),
+    calendarCheck: () => checkUpcomingEvents(bot),
+    taskReminders: () => checkAndSendReminders(bot),
+  });
+
+  // Start Telethon/GramJS userbot for chat monitoring
+  const userbotStarted = await startUserbot(bot);
+  if (userbotStarted) {
+    logger.info("Chat monitoring active");
+  }
+
+  // Graceful shutdown
+  const shutdown = async () => {
+    logger.info("Shutting down...");
+    stopSchedules();
+    await stopUserbot();
+    await bot.stop();
+    logger.info("COO Assistant stopped.");
+    process.exit(0);
+  };
+
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+
+  // Start the Telegram bot (blocking)
+  logger.info("COO Assistant is online. Telegram bot starting...");
+  await bot.start();
+}
+
+main().catch((err) => {
+  logger.fatal({ err }, "Fatal error");
+  process.exit(1);
+});

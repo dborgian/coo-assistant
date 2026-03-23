@@ -15,27 +15,39 @@ AI-powered Chief Operating Officer assistant for internal startup operations. Co
 
 ## Architecture
 
-Built on the Claude Agent SDK with MCP (Model Context Protocol) for external tool integration:
+Built on the Anthropic SDK with MCP (Model Context Protocol) for external tool integration:
 
 ```
-Telegram Bot (PTB) + Telethon Userbot
+Telegram Bot (grammY) + GramJS Userbot
          |
     Service Layer (chat monitor, reports, reminders, calendar, email)
          |
-    Claude Agent SDK (AI reasoning)
+    Anthropic SDK (AI reasoning)
          |
     MCP Servers (Google Calendar, Gmail) + Direct APIs (Kanbanchi)
          |
-    SQLite Database (persistent state)
+    SQLite Database (better-sqlite3 + Drizzle ORM)
 ```
+
+## Tech Stack
+
+- **Runtime:** Node.js 20+ / TypeScript
+- **Telegram Bot:** grammY
+- **Telegram Userbot:** GramJS (chat monitoring)
+- **AI:** @anthropic-ai/sdk
+- **MCP:** @modelcontextprotocol/sdk
+- **Database:** SQLite via better-sqlite3 + Drizzle ORM
+- **Scheduler:** node-cron
+- **Validation:** Zod
+- **Logging:** Pino
 
 ## Quick Start
 
 ### 1. Prerequisites
 
-- Python 3.11+
+- Node.js 20+
 - Telegram Bot Token (from [@BotFather](https://t.me/botfather))
-- Telethon API credentials (from [my.telegram.org](https://my.telegram.org))
+- GramJS API credentials (from [my.telegram.org](https://my.telegram.org))
 - Anthropic API key
 - Google Cloud project with Calendar & Gmail APIs enabled (for MCP)
 
@@ -44,7 +56,7 @@ Telegram Bot (PTB) + Telethon Userbot
 ```bash
 git clone https://github.com/dborgian/coo-assistant.git
 cd coo-assistant
-pip install -e .
+npm install
 ```
 
 ### 3. Configure
@@ -57,7 +69,11 @@ cp .env.example .env
 ### 4. Run
 
 ```bash
-python -m src.main
+# Development (with hot reload)
+npm run dev
+
+# Production
+npm run build && npm start
 ```
 
 ### 5. Talk to your COO
@@ -85,8 +101,19 @@ Configure MCP servers in `config/mcp_servers.json`. The assistant uses these for
 ## Development
 
 ```bash
-pip install -e ".[dev]"
-pytest
+npm install
+npm run dev       # Watch mode
+npm run lint      # ESLint
+npm test          # Vitest
+```
+
+## Database
+
+Uses Drizzle ORM with SQLite. To generate migrations:
+
+```bash
+npx drizzle-kit generate
+npx drizzle-kit push
 ```
 
 ## License
