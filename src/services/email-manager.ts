@@ -1,13 +1,123 @@
+import { google } from "googleapis";
 import type { Bot } from "grammy";
+import { agent } from "../core/agent.js";
+import { config } from "../config.js";
+import { getGoogleAuth, isGoogleConfigured } from "../core/google-auth.js";
+import { db } from "../models/database.js";
+import { messageLogs } from "../models/schema.js";
 import { logger } from "../utils/logger.js";
 
-export async function checkImportantEmails(_bot: Bot): Promise<void> {
-  // TODO: Integrate with Gmail MCP server
-  // The flow will be:
-  // 1. Call MCP tool: gmail.list_messages(query="is:unread is:important")
-  // 2. For each important unread email, classify urgency via AI
-  // 3. Notify owner of urgent emails
-  // 4. Log to message_logs table
+export interface EmailSummary {
+  id: string;
+  from: string;
+  subject: string;
+  snippet: string;
+  date: string;
+}
 
-  logger.debug("Email check — MCP integration pending setup");
+export async function getUnreadImportantEmails(maxResults = 10): Promise<EmailSummary[]> {
+  const auth = getGoogleAuth();
+  if (!auth) return [];
+
+  const gmail = google.gmail({ version: "v1", auth });
+
+  try {
+    const res = await gmail.users.messages.list({
+      userId: "me",
+      q: "is:unread is:important",
+      maxResults,
+    });
+
+    const messages = res.data.messages ?? [];
+    const emails: EmailSummary[] = [];
+
+    for (const msg of messages) {
+      const detail = await gmail.users.messages.get({
+        userId: "me",
+        id: msg.id!,
+        format: "metadata",
+        metadataHeaders: ["From", "Subject", "Date"],
+      });
+
+      const headers = detail.data.payload?.headers ?? [];
+      const getHeader = (name: string) =>
+        headers.find((h) => h.name === name)?.value ?? "";
+
+      emails.push({
+        id: msg.id!,
+        from: getHeader("From"),
+        subject: getHeader("Subject"),
+        snippet: detail.data.snippet ?? "",
+        date: getHeader("Date"),
+      });
+    }
+
+    return emails;
+  } catch (err) {
+    logger.error({ err }, "Failed to fetch emails");
+    return [];
+  }
+}
+
+export async function checkImportantEmails(bot: Bot): Promise<void> {
+  if (!isGoogleConfigured()) {
+    logger.debug("Email check skipped — Google not configured");
+    return;
+  }
+
+  const emails = await getUnreadImportantEmails(5);
+  if (emails.length === 0) return;
+
+  for (const email of emails) {
+    // Dedup: skip if already notified
+    const alreadyLogged = db
+      .select()
+      .from(messageLogs)
+      .all()
+      .find((m) => m.source === "gmail" && m.content.includes(email.id));
+
+    if (alreadyLogged) continue;
+
+    // Classify urgency with AI
+    const classification = await agent.classifyMessageUrgency(
+      `Subject: ${email.subject}\n\n${email.snippet}`,
+      email.from,
+      "Gmail",
+    );
+
+    // Log to database
+    db.insert(messageLogs)
+      .values({
+        source: "gmail",
+        chatTitle: "Gmail",
+        senderName: email.from,
+        content: `[${email.id}] ${email.subject}: ${email.snippet}`,
+        urgency: classification.urgency,
+        needsReply: classification.needs_reply,
+      })
+      .run();
+
+    // Notify if high/critical
+    if (classification.urgency === "high" || classification.urgency === "critical") {
+      const icon = classification.urgency === "critical" ? "\uD83D\uDD34" : "\uD83D\uDFE0";
+      const msg = [
+        `${icon} <b>Email ${classification.urgency.toUpperCase()}</b>`,
+        `<b>Da:</b> ${escapeHtml(email.from)}`,
+        `<b>Oggetto:</b> ${escapeHtml(email.subject)}`,
+        `<i>${escapeHtml(email.snippet)}</i>`,
+        classification.needs_reply ? "\n\u2709\uFE0F Richiede risposta" : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+
+      await bot.api.sendMessage(config.TELEGRAM_OWNER_CHAT_ID, msg, { parse_mode: "HTML" });
+    }
+  }
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }

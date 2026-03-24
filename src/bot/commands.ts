@@ -5,6 +5,8 @@ import { db } from "../models/database.js";
 import { clients, employees, messageLogs, tasks } from "../models/schema.js";
 import { config } from "../config.js";
 import { logger } from "../utils/logger.js";
+import { getTodayEvents } from "../services/calendar-sync.js";
+import { getUnreadImportantEmails } from "../services/email-manager.js";
 
 export async function startCommand(ctx: CommandContext<Context>): Promise<void> {
   await ctx.reply(
@@ -111,8 +113,25 @@ export async function reportCommand(ctx: CommandContext<Context>): Promise<void>
     )
     .all();
 
+  // Fetch calendar events and emails
+  const [calendarEvents, importantEmails] = await Promise.all([
+    getTodayEvents(),
+    getUnreadImportantEmails(5),
+  ]);
+
   const data = {
     date: new Date().toISOString().split("T")[0],
+    calendar_events: calendarEvents.map((e) => ({
+      summary: e.summary,
+      start: e.start,
+      end: e.end,
+      location: e.location,
+    })),
+    important_emails: importantEmails.map((e) => ({
+      from: e.from,
+      subject: e.subject,
+      snippet: e.snippet,
+    })),
     tasks: activeTasks.map((t) => ({
       title: t.title,
       status: t.status,

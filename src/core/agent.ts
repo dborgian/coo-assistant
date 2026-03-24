@@ -4,6 +4,8 @@ import { config } from "../config.js";
 import { db } from "../models/database.js";
 import { clients, employees, tasks } from "../models/schema.js";
 import { logger } from "../utils/logger.js";
+import { getTodayEvents } from "../services/calendar-sync.js";
+import { getUnreadImportantEmails } from "../services/email-manager.js";
 
 const COO_SYSTEM_PROMPT = `\
 You are the Chief Operating Officer (COO) AI assistant for a high-performance startup.
@@ -26,10 +28,15 @@ Your personality:
 When generating reports or summaries, use clear formatting with sections and bullet points.
 When notifying about urgent matters, lead with the urgency level.
 
-You have access to the following tools to accomplish your tasks:
-- Google Calendar (read/write events)
-- Gmail (read/send emails)
-- Kanbanchi (project board management)
+IMPORTANT: The context data provided with each query is LIVE data already fetched from integrated services.
+- If "calendar_events_today" is an empty array, it means there are NO meetings today (the calendar IS connected).
+- If "unread_important_emails" is an empty array, it means there are no important unread emails (Gmail IS connected).
+- NEVER say you "don't have access" or "need to connect" — the integrations are already active.
+- Answer based on the data provided. An empty array means "none", not "unavailable".
+
+You have access to the following data sources:
+- Google Calendar (today's events are provided in context)
+- Gmail (important unread emails are provided in context)
 - Internal database (employees, clients, tasks, message logs)
 `;
 
@@ -108,11 +115,12 @@ Data:
 ${JSON.stringify(data, null, 2)}
 
 Include sections for:
-1. Today's Calendar
-2. Active Tasks & Deadlines
-3. Messages Needing Attention
-4. Overdue Items
-5. Key Metrics / Status
+1. Today's Calendar (events, conflicts)
+2. Important Emails (unread, needing attention)
+3. Active Tasks & Deadlines
+4. Messages Needing Attention
+5. Overdue Items
+6. Key Metrics / Status
 
 If any section has no data, note it briefly and move on.`;
 
@@ -138,7 +146,18 @@ If any section has no data, note it briefly and move on.`;
       .where(inArray(tasks.status, ["pending", "in_progress"]))
       .all();
 
+    // Fetch calendar and email data
+    const [calendarEvents, importantEmails] = await Promise.all([
+      getTodayEvents().catch(() => []),
+      getUnreadImportantEmails(5).catch(() => []),
+    ]);
+
     const context = {
+      today: new Date().toISOString().split("T")[0],
+      integrations: {
+        google_calendar: "connected — data below is live from Google Calendar",
+        gmail: "connected — data below is live from Gmail",
+      },
       employees: allEmployees.map((e) => ({
         id: e.id,
         name: e.name,
@@ -155,6 +174,17 @@ If any section has no data, note it briefly and move on.`;
         status: t.status,
         priority: t.priority,
         due: t.dueDate,
+      })),
+      calendar_events_today: calendarEvents.map((e) => ({
+        summary: e.summary,
+        start: e.start,
+        end: e.end,
+        location: e.location,
+      })),
+      unread_important_emails: importantEmails.map((e) => ({
+        from: e.from,
+        subject: e.subject,
+        snippet: e.snippet,
       })),
     };
 

@@ -8,6 +8,7 @@ interface ScheduledJobs {
   dailyReport?: cron.ScheduledTask;
   chatMonitor?: cron.ScheduledTask;
   calendarCheck?: cron.ScheduledTask;
+  emailCheck?: cron.ScheduledTask;
   taskReminders?: cron.ScheduledTask;
 }
 
@@ -17,6 +18,7 @@ export function setupSchedules(callbacks: {
   dailyReport: JobCallback;
   chatMonitor: JobCallback;
   calendarCheck: JobCallback;
+  emailCheck: JobCallback;
   taskReminders: JobCallback;
 }): void {
   // Daily operations report
@@ -38,6 +40,13 @@ export function setupSchedules(callbacks: {
   jobs.calendarCheck = cron.schedule(`*/${config.CALENDAR_CHECK_INTERVAL_MINUTES} * * * *`, () => {
     callbacks.calendarCheck().catch((err) =>
       logger.error({ err }, "Calendar check failed"),
+    );
+  });
+
+  // Email check (every N minutes)
+  jobs.emailCheck = cron.schedule(`*/${config.EMAIL_CHECK_INTERVAL_MINUTES} * * * *`, () => {
+    callbacks.emailCheck().catch((err) =>
+      logger.error({ err }, "Email check failed"),
     );
   });
 

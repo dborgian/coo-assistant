@@ -36,6 +36,14 @@ export function createBot(): Bot {
   // Free-form messages go to the AI agent
   bot.on("message:text", askCommand);
 
+  // Error handler — prevents crashes on unhandled errors
+  bot.catch((err) => {
+    const ctx = err.ctx;
+    const e = err.error;
+    logger.error({ err: e, updateId: ctx.update.update_id }, "Bot error");
+    ctx.reply("Something went wrong. Please try again.").catch(() => {});
+  });
+
   logger.info({ ownerId: config.TELEGRAM_OWNER_CHAT_ID }, "Telegram bot configured");
 
   return bot;

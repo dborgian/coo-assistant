@@ -1,5 +1,7 @@
-import "dotenv/config";
+import dotenv from "dotenv";
 import { z } from "zod";
+
+dotenv.config({ override: true });
 
 const envSchema = z.object({
   // Telegram Bot
@@ -25,6 +27,10 @@ const envSchema = z.object({
   GOOGLE_REDIRECT_URI: z
     .string()
     .default("http://localhost:8080/oauth/callback"),
+  GOOGLE_REFRESH_TOKEN: z.string().default(""),
+
+  // Gmail
+  EMAIL_CHECK_INTERVAL_MINUTES: z.coerce.number().default(10),
 
   // Kanbanchi
   KANBANCHI_API_KEY: z.string().default(""),

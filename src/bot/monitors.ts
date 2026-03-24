@@ -93,6 +93,9 @@ async function onNewMessage(event: NewMessageEvent): Promise<void> {
   // Skip our own messages
   if (message.out) return;
 
+  // Skip private chats (only monitor groups/supergroups)
+  if (message.isPrivate) return;
+
   // Only process messages from monitored chats (if list is configured)
   if (
     config.MONITORED_CHAT_IDS.length &&
@@ -107,6 +110,9 @@ async function onNewMessage(event: NewMessageEvent): Promise<void> {
   // Get sender and chat info
   const sender = await message.getSender();
   const chat = await message.getChat();
+
+  // Skip messages from bots
+  if (sender && "bot" in sender && sender.bot) return;
 
   const senderName =
     (sender && "firstName" in sender ? sender.firstName : null) ??

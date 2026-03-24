@@ -5,6 +5,7 @@ import { initDb } from "./models/database.js";
 import { checkUpcomingEvents } from "./services/calendar-sync.js";
 import { checkPendingMessages } from "./services/chat-monitor.js";
 import { generateAndSendDailyReport } from "./services/daily-reporter.js";
+import { checkImportantEmails } from "./services/email-manager.js";
 import { checkAndSendReminders } from "./services/task-reminder.js";
 import { startUserbot, stopUserbot } from "./bot/monitors.js";
 import { logger } from "./utils/logger.js";
@@ -27,6 +28,7 @@ async function main(): Promise<void> {
     dailyReport: () => generateAndSendDailyReport(bot),
     chatMonitor: () => checkPendingMessages(bot),
     calendarCheck: () => checkUpcomingEvents(bot),
+    emailCheck: () => checkImportantEmails(bot),
     taskReminders: () => checkAndSendReminders(bot),
   });
 
