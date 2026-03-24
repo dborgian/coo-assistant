@@ -7,6 +7,7 @@ import { config } from "../config.js";
 import { logger } from "../utils/logger.js";
 import { getTodayEvents } from "../services/calendar-sync.js";
 import { getUnreadImportantEmails } from "../services/email-manager.js";
+import { getKanbanchiBoards } from "../services/kanbanchi-sync.js";
 import {
   getMonitoredSlackChannels,
   addMonitoredSlackChannel,
@@ -122,10 +123,11 @@ export async function reportCommand(ctx: CommandContext<Context>): Promise<void>
     )
     .all();
 
-  // Fetch calendar events and emails
-  const [calendarEvents, importantEmails] = await Promise.all([
+  // Fetch calendar events, emails, and Kanbanchi boards
+  const [calendarEvents, importantEmails, kanbanchiBoards] = await Promise.all([
     getTodayEvents(),
     getUnreadImportantEmails(5),
+    getKanbanchiBoards().catch(() => []),
   ]);
 
   const data = {
@@ -152,6 +154,18 @@ export async function reportCommand(ctx: CommandContext<Context>): Promise<void>
       chat: m.chatTitle,
       urgency: m.urgency,
       summary: m.content.slice(0, 200),
+    })),
+    kanbanchi_boards: kanbanchiBoards.map((b) => ({
+      name: b.name,
+      columns: b.columns.map((c) => c.name),
+      total_cards: b.cards.length,
+      cards: b.cards.map((c) => ({
+        title: c.title,
+        column: c.columnName,
+        assignees: c.assignees,
+        due: c.dueDate,
+        overdue: c.isOverdue,
+      })),
     })),
   };
 

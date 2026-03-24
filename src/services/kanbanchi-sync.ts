@@ -55,12 +55,12 @@ export async function getKanbanchiBoards(): Promise<KanbanchiBoard[]> {
   try {
     // Find Kanbanchi root folder
     const folderId = await findKanchiFolderId(drive);
-    if (!folderId) { logger.debug("Kanbanchi: root folder not found"); return []; }
-    logger.debug({ folderId }, "Kanbanchi: root folder found");
+    if (!folderId) { logger.warn("Kanbanchi: root folder not found"); return []; }
+    logger.info({ folderId }, "Kanbanchi: root folder found");
 
     // List board folders
     const boardFolders = await listBoardFolders(drive, folderId);
-    logger.debug({ count: boardFolders.length, names: boardFolders.map((f) => f.name) }, "Kanbanchi: board folders found");
+    logger.info({ count: boardFolders.length, names: boardFolders.map((f) => f.name) }, "Kanbanchi: board folders found");
     const boards: KanbanchiBoard[] = [];
 
     for (const folder of boardFolders) {
@@ -132,7 +132,7 @@ async function readBoardBackup(
 
   const backupFolder = backupRes.data.files?.[0];
   if (!backupFolder) {
-    logger.debug({ boardName }, "No backup folder found for board");
+    logger.warn({ boardName }, "Kanbanchi: no backup folder found for board");
     return null;
   }
 
@@ -146,7 +146,7 @@ async function readBoardBackup(
 
   const backupFile = filesRes.data.files?.[0];
   if (!backupFile) {
-    logger.debug({ boardName }, "No backup files found");
+    logger.warn({ boardName }, "Kanbanchi: no backup files found");
     return null;
   }
 

@@ -42,7 +42,7 @@ export async function generateAndSendDailyReport(bot: Bot): Promise<void> {
   const [calendarEvents, importantEmails, kanbanchiBoards] = await Promise.all([
     getTodayEvents(),
     getUnreadImportantEmails(10),
-    getKanbanchiBoards().catch(() => []),
+    getKanbanchiBoards().then((b) => { logger.info({ boards: b.length }, "Kanbanchi data for report"); return b; }).catch((err) => { logger.error({ err }, "Kanbanchi fetch failed in report"); return [] as any[]; }),
   ]);
 
   const reportData = {

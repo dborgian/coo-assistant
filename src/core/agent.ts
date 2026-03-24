@@ -126,9 +126,10 @@ Include sections for:
 1. Today's Calendar (events, conflicts)
 2. Important Emails (unread, needing attention)
 3. Active Tasks & Deadlines
-4. Messages Needing Attention
-5. Overdue Items
-6. Key Metrics / Status
+4. Messages Needing Attention (Telegram + Slack)
+5. Kanbanchi Board Status (cards by column, overdue cards, unassigned cards)
+6. Overdue Items
+7. Key Metrics / Status
 
 If any section has no data, note it briefly and move on.`;
 
