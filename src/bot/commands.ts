@@ -7,6 +7,11 @@ import { config } from "../config.js";
 import { logger } from "../utils/logger.js";
 import { getTodayEvents } from "../services/calendar-sync.js";
 import { getUnreadImportantEmails } from "../services/email-manager.js";
+import {
+  getMonitoredSlackChannels,
+  addMonitoredSlackChannel,
+  removeMonitoredSlackChannel,
+} from "./slack-monitor.js";
 
 export async function startCommand(ctx: CommandContext<Context>): Promise<void> {
   await ctx.reply(
@@ -20,7 +25,8 @@ export async function startCommand(ctx: CommandContext<Context>): Promise<void> 
       "/remind — Set a reminder\n" +
       "/add_employee — Add team member\n" +
       "/add_client — Add client\n" +
-      "/monitor — Configure chat monitoring\n" +
+      "/monitor — Configure Telegram chat monitoring\n" +
+      "/slack — Configure Slack channel monitoring\n" +
       "/help — Full help\n\n" +
       "Or just send me any message and I'll help.",
     { parse_mode: "HTML" },
@@ -37,8 +43,11 @@ export async function helpCommand(ctx: CommandContext<Context>): Promise<void> {
       "  Example: /remind John Submit report tomorrow 9am\n" +
       "<b>/add_employee [name] [email] [role]</b> — Add team member\n" +
       "<b>/add_client [name] [company] [email]</b> — Add client\n" +
-      "<b>/monitor add [chat_id]</b> — Add chat to monitor\n" +
-      "<b>/monitor list</b> — Show monitored chats\n\n" +
+      "<b>/monitor add [chat_id]</b> — Add Telegram chat to monitor\n" +
+      "<b>/monitor list</b> — Show monitored Telegram chats\n" +
+      "<b>/slack add [channel_id]</b> — Add Slack channel to monitor\n" +
+      "<b>/slack list</b> — Show monitored Slack channels\n" +
+      "<b>/slack remove [channel_id]</b> — Stop monitoring channel\n\n" +
       "Any other message → I'll answer as your COO assistant.",
     { parse_mode: "HTML" },
   );
@@ -311,6 +320,36 @@ export async function monitorCommand(ctx: CommandContext<Context>): Promise<void
       config.MONITORED_CHAT_IDS.push(chatId);
     }
     await ctx.reply(`Now monitoring chat: ${chatId}`);
+  }
+}
+
+export async function slackCommand(ctx: CommandContext<Context>): Promise<void> {
+  const args = ctx.match?.toString().trim().split(/\s+/) ?? [];
+  if (!args[0]) {
+    await ctx.reply(
+      "Usage:\n/slack list — Show monitored Slack channels\n/slack add [channel_id] — Add channel\n/slack remove [channel_id] — Remove channel",
+    );
+    return;
+  }
+
+  if (args[0] === "list") {
+    const channels = getMonitoredSlackChannels();
+    if (channels.length) {
+      await ctx.reply(
+        `<b>Monitored Slack channels:</b>\n${channels.join("\n")}`,
+        { parse_mode: "HTML" },
+      );
+    } else {
+      await ctx.reply(
+        "No Slack channels being monitored. Use /slack add [channel_id]",
+      );
+    }
+  } else if (args[0] === "add" && args[1]) {
+    addMonitoredSlackChannel(args[1]);
+    await ctx.reply(`Now monitoring Slack channel: ${args[1]}`);
+  } else if (args[0] === "remove" && args[1]) {
+    removeMonitoredSlackChannel(args[1]);
+    await ctx.reply(`Stopped monitoring Slack channel: ${args[1]}`);
   }
 }
 

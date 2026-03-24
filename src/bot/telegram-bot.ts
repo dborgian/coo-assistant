@@ -7,6 +7,7 @@ import {
   helpCommand,
   monitorCommand,
   remindCommand,
+  slackCommand,
   reportCommand,
   startCommand,
   statusCommand,
@@ -32,6 +33,7 @@ export function createBot(): Bot {
   bot.command("add_employee", addEmployeeCommand);
   bot.command("add_client", addClientCommand);
   bot.command("monitor", monitorCommand);
+  bot.command("slack", slackCommand);
 
   // Free-form messages go to the AI agent
   bot.on("message:text", askCommand);

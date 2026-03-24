@@ -74,6 +74,23 @@ export async function generateAndSendDailyReport(bot: Bot): Promise<void> {
       received: m.receivedAt,
     })),
     messages_today: todayMessagesCount,
+    slack_messages: db
+      .select()
+      .from(messageLogs)
+      .where(
+        and(
+          sql`date(${messageLogs.receivedAt}) = ${today}`,
+          eq(messageLogs.source, "slack"),
+        ),
+      )
+      .all()
+      .map((m) => ({
+        channel: m.chatTitle,
+        sender: m.senderName,
+        content: m.content.slice(0, 200),
+        urgency: m.urgency,
+        time: m.receivedAt,
+      })),
     summary: {
       total_active_tasks: activeTasks.length,
       overdue_count: overdueTasks.length,

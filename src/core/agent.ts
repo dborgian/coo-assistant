@@ -1,8 +1,8 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { config } from "../config.js";
 import { db } from "../models/database.js";
-import { clients, employees, tasks } from "../models/schema.js";
+import { clients, employees, messageLogs, tasks } from "../models/schema.js";
 import { logger } from "../utils/logger.js";
 import { getTodayEvents } from "../services/calendar-sync.js";
 import { getUnreadImportantEmails } from "../services/email-manager.js";
@@ -31,12 +31,18 @@ When notifying about urgent matters, lead with the urgency level.
 IMPORTANT: The context data provided with each query is LIVE data already fetched from integrated services.
 - If "calendar_events_today" is an empty array, it means there are NO meetings today (the calendar IS connected).
 - If "unread_important_emails" is an empty array, it means there are no important unread emails (Gmail IS connected).
+- If "recent_slack_messages" is an empty array, it means no Slack messages in the last 24h (Slack IS connected).
 - NEVER say you "don't have access" or "need to connect" — the integrations are already active.
 - Answer based on the data provided. An empty array means "none", not "unavailable".
+
+When asked for a Slack report or summary, organize messages by channel, then by time.
+For each channel show: channel name, number of messages, key topics discussed, and any action items.
+Highlight urgent messages and messages that need a reply.
 
 You have access to the following data sources:
 - Google Calendar (today's events are provided in context)
 - Gmail (important unread emails are provided in context)
+- Slack (recent channel messages are provided in context)
 - Internal database (employees, clients, tasks, message logs)
 `;
 
@@ -152,11 +158,24 @@ If any section has no data, note it briefly and move on.`;
       getUnreadImportantEmails(5).catch(() => []),
     ]);
 
+    // Fetch recent Slack messages (last 24h)
+    const recentSlackMessages = db
+      .select()
+      .from(messageLogs)
+      .where(
+        and(
+          eq(messageLogs.source, "slack"),
+          sql`datetime(${messageLogs.receivedAt}) > datetime('now', '-24 hours')`,
+        ),
+      )
+      .all();
+
     const context = {
       today: new Date().toISOString().split("T")[0],
       integrations: {
         google_calendar: "connected — data below is live from Google Calendar",
         gmail: "connected — data below is live from Gmail",
+        slack: "connected — recent messages below are from Slack channels",
       },
       employees: allEmployees.map((e) => ({
         id: e.id,
@@ -185,6 +204,13 @@ If any section has no data, note it briefly and move on.`;
         from: e.from,
         subject: e.subject,
         snippet: e.snippet,
+      })),
+      recent_slack_messages: recentSlackMessages.map((m) => ({
+        channel: m.chatTitle,
+        sender: m.senderName,
+        urgency: m.urgency,
+        summary: m.content.slice(0, 200),
+        received: m.receivedAt,
       })),
     };
 

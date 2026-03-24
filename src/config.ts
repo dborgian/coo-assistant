@@ -32,6 +32,15 @@ const envSchema = z.object({
   // Gmail
   EMAIL_CHECK_INTERVAL_MINUTES: z.coerce.number().default(10),
 
+  // Slack (Socket Mode for real-time monitoring)
+  SLACK_BOT_TOKEN: z.string().default(""),
+  SLACK_APP_TOKEN: z.string().default(""),
+  SLACK_SIGNING_SECRET: z.string().default(""),
+  MONITORED_SLACK_CHANNELS: z
+    .string()
+    .default("[]")
+    .transform((v) => JSON.parse(v) as string[]),
+
   // Kanbanchi
   KANBANCHI_API_KEY: z.string().default(""),
   KANBANCHI_BOARD_ID: z.string().default(""),

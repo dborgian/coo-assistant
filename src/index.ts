@@ -8,6 +8,7 @@ import { generateAndSendDailyReport } from "./services/daily-reporter.js";
 import { checkImportantEmails } from "./services/email-manager.js";
 import { checkAndSendReminders } from "./services/task-reminder.js";
 import { startUserbot, stopUserbot } from "./bot/monitors.js";
+import { startSlackMonitor, stopSlackMonitor } from "./bot/slack-monitor.js";
 import { logger } from "./utils/logger.js";
 
 async function main(): Promise<void> {
@@ -35,13 +36,20 @@ async function main(): Promise<void> {
   // Start Telethon/GramJS userbot for chat monitoring
   const userbotStarted = await startUserbot(bot);
   if (userbotStarted) {
-    logger.info("Chat monitoring active");
+    logger.info("Telegram chat monitoring active");
+  }
+
+  // Start Slack monitor for channel monitoring
+  const slackStarted = await startSlackMonitor(bot);
+  if (slackStarted) {
+    logger.info("Slack monitoring active");
   }
 
   // Graceful shutdown
   const shutdown = async () => {
     logger.info("Shutting down...");
     stopSchedules();
+    await stopSlackMonitor();
     await stopUserbot();
     await bot.stop();
     logger.info("COO Assistant stopped.");
