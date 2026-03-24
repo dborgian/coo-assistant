@@ -41,9 +41,10 @@ const envSchema = z.object({
     .default("[]")
     .transform((v) => JSON.parse(v) as string[]),
 
-  // Kanbanchi
-  KANBANCHI_API_KEY: z.string().default(""),
-  KANBANCHI_BOARD_ID: z.string().default(""),
+  // Kanbanchi (via Google Drive backup)
+  KANBANCHI_FOLDER_ID: z.string().default(""),
+  KANBANCHI_BOARD_NAME: z.string().default(""),
+  KANBANCHI_SYNC_INTERVAL_MINUTES: z.coerce.number().default(30),
 
   // Database
   DATABASE_PATH: z.string().default("./data/coo.db"),

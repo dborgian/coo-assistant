@@ -25,6 +25,7 @@ if (!clientId || !clientSecret) {
 const SCOPES = [
   "https://www.googleapis.com/auth/calendar.readonly",
   "https://www.googleapis.com/auth/gmail.readonly",
+  "https://www.googleapis.com/auth/drive.readonly",
 ];
 
 const oauth2Client = new google.auth.OAuth2(clientId, clientSecret, redirectUri);

@@ -6,6 +6,7 @@ import { clients, employees, messageLogs, tasks } from "../models/schema.js";
 import { logger } from "../utils/logger.js";
 import { getTodayEvents } from "../services/calendar-sync.js";
 import { getUnreadImportantEmails } from "../services/email-manager.js";
+import { getKanbanchiBoards } from "../services/kanbanchi-sync.js";
 
 const COO_SYSTEM_PROMPT = `\
 You are the Chief Operating Officer (COO) AI assistant for a high-performance startup.
@@ -43,6 +44,7 @@ You have access to the following data sources:
 - Google Calendar (today's events are provided in context)
 - Gmail (important unread emails are provided in context)
 - Slack (recent channel messages are provided in context)
+- Kanbanchi boards (task boards synced from Google Drive backups)
 - Internal database (employees, clients, tasks, message logs)
 `;
 
@@ -152,10 +154,11 @@ If any section has no data, note it briefly and move on.`;
       .where(inArray(tasks.status, ["pending", "in_progress"]))
       .all();
 
-    // Fetch calendar and email data
-    const [calendarEvents, importantEmails] = await Promise.all([
+    // Fetch calendar, email, and Kanbanchi data
+    const [calendarEvents, importantEmails, kanbanchiBoards] = await Promise.all([
       getTodayEvents().catch(() => []),
       getUnreadImportantEmails(5).catch(() => []),
+      getKanbanchiBoards().catch(() => []),
     ]);
 
     // Fetch recent Slack messages (last 24h)
@@ -176,6 +179,7 @@ If any section has no data, note it briefly and move on.`;
         google_calendar: "connected — data below is live from Google Calendar",
         gmail: "connected — data below is live from Gmail",
         slack: "connected — recent messages below are from Slack channels",
+        kanbanchi: "connected — board data below is from Kanbanchi backups on Google Drive",
       },
       employees: allEmployees.map((e) => ({
         id: e.id,
@@ -211,6 +215,18 @@ If any section has no data, note it briefly and move on.`;
         urgency: m.urgency,
         summary: m.content.slice(0, 200),
         received: m.receivedAt,
+      })),
+      kanbanchi_boards: kanbanchiBoards.map((b) => ({
+        name: b.name,
+        columns: b.columns.map((c) => c.name),
+        cards: b.cards.map((c) => ({
+          title: c.title,
+          column: c.columnName,
+          assignees: c.assignees,
+          due: c.dueDate,
+          overdue: c.isOverdue,
+          description: c.description.slice(0, 100),
+        })),
       })),
     };
 

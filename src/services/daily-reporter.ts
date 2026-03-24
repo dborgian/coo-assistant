@@ -6,6 +6,7 @@ import { db } from "../models/database.js";
 import { dailyReports, messageLogs, tasks } from "../models/schema.js";
 import { getTodayEvents } from "./calendar-sync.js";
 import { getUnreadImportantEmails } from "./email-manager.js";
+import { getKanbanchiBoards } from "./kanbanchi-sync.js";
 import { logger } from "../utils/logger.js";
 
 export async function generateAndSendDailyReport(bot: Bot): Promise<void> {
@@ -37,10 +38,11 @@ export async function generateAndSendDailyReport(bot: Bot): Promise<void> {
     .where(sql`date(${messageLogs.receivedAt}) = ${today}`)
     .get()!.count;
 
-  // Fetch calendar events and important emails
-  const [calendarEvents, importantEmails] = await Promise.all([
+  // Fetch calendar events, emails, and Kanbanchi boards
+  const [calendarEvents, importantEmails, kanbanchiBoards] = await Promise.all([
     getTodayEvents(),
     getUnreadImportantEmails(10),
+    getKanbanchiBoards().catch(() => []),
   ]);
 
   const reportData = {
@@ -91,12 +93,27 @@ export async function generateAndSendDailyReport(bot: Bot): Promise<void> {
         urgency: m.urgency,
         time: m.receivedAt,
       })),
+    kanbanchi_boards: kanbanchiBoards.map((b) => ({
+      name: b.name,
+      columns: b.columns.map((c) => c.name),
+      total_cards: b.cards.length,
+      overdue_cards: b.cards.filter((c) => c.isOverdue).map((c) => ({
+        title: c.title,
+        column: c.columnName,
+        due: c.dueDate,
+        assignees: c.assignees,
+      })),
+    })),
     summary: {
       total_active_tasks: activeTasks.length,
       overdue_count: overdueTasks.length,
       pending_replies: pendingMessages.length,
       calendar_events: calendarEvents.length,
       unread_important_emails: importantEmails.length,
+      kanbanchi_boards: kanbanchiBoards.length,
+      kanbanchi_overdue: kanbanchiBoards.reduce(
+        (n, b) => n + b.cards.filter((c) => c.isOverdue).length, 0,
+      ),
     },
   };
 

@@ -7,6 +7,7 @@ import { checkPendingMessages } from "./services/chat-monitor.js";
 import { generateAndSendDailyReport } from "./services/daily-reporter.js";
 import { checkImportantEmails } from "./services/email-manager.js";
 import { checkAndSendReminders } from "./services/task-reminder.js";
+import { syncKanbanchiBoard } from "./services/kanbanchi-sync.js";
 import { startUserbot, stopUserbot } from "./bot/monitors.js";
 import { startSlackMonitor, stopSlackMonitor } from "./bot/slack-monitor.js";
 import { logger } from "./utils/logger.js";
@@ -31,6 +32,7 @@ async function main(): Promise<void> {
     calendarCheck: () => checkUpcomingEvents(bot),
     emailCheck: () => checkImportantEmails(bot),
     taskReminders: () => checkAndSendReminders(bot),
+    kanbanchiSync: () => syncKanbanchiBoard(bot),
   });
 
   // Start Telethon/GramJS userbot for chat monitoring
