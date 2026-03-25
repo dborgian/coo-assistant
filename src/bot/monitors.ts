@@ -146,18 +146,17 @@ async function handleNewMessage(
     chatTitle,
   );
 
-  db.insert(messageLogs)
+  await db.insert(messageLogs)
     .values({
       source: "telegram",
       chatId,
       chatTitle,
       senderName,
-      senderId: senderId ?? null,
-      content: messageText,
+      senderId: senderId != null ? String(senderId) : null,
+      content: messageText.slice(0, 500),
       urgency: classification.urgency,
       needsReply: classification.needs_reply,
-    })
-    .run();
+    });
 
   // Notify owner if high urgency or needs reply
   if (

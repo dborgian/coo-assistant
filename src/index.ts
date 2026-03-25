@@ -1,13 +1,13 @@
 import { createBot } from "./bot/telegram-bot.js";
 import { mcpManager } from "./core/mcp-client.js";
 import { setupSchedules, stopSchedules } from "./core/scheduler.js";
-import { initDb } from "./models/database.js";
+import { initDb, closeDb } from "./models/database.js";
 import { checkUpcomingEvents } from "./services/calendar-sync.js";
 import { checkPendingMessages } from "./services/chat-monitor.js";
 import { generateAndSendDailyReport } from "./services/daily-reporter.js";
 import { checkImportantEmails } from "./services/email-manager.js";
 import { checkAndSendReminders } from "./services/task-reminder.js";
-import { syncKanbanchiBoard } from "./services/kanbanchi-sync.js";
+import { syncNotionData } from "./services/notion-sync.js";
 import { startUserbot, stopUserbot } from "./bot/monitors.js";
 import { startSlackMonitor, stopSlackMonitor } from "./bot/slack-monitor.js";
 import { logger } from "./utils/logger.js";
@@ -15,9 +15,8 @@ import { logger } from "./utils/logger.js";
 async function main(): Promise<void> {
   logger.info("Starting COO Assistant...");
 
-  // Initialize database
-  initDb();
-  logger.info("Database initialized");
+  // Initialize database (Supabase)
+  await initDb();
 
   // Load MCP config
   mcpManager.loadConfig();
@@ -32,7 +31,7 @@ async function main(): Promise<void> {
     calendarCheck: () => checkUpcomingEvents(bot),
     emailCheck: () => checkImportantEmails(bot),
     taskReminders: () => checkAndSendReminders(bot),
-    kanbanchiSync: () => syncKanbanchiBoard(bot),
+    notionSync: () => syncNotionData(bot),
   });
 
   // Start Telethon/GramJS userbot for chat monitoring
@@ -54,6 +53,7 @@ async function main(): Promise<void> {
     await stopSlackMonitor();
     await stopUserbot();
     await bot.stop();
+    await closeDb();
     logger.info("COO Assistant stopped.");
     process.exit(0);
   };

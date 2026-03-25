@@ -1,67 +1,96 @@
-import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
-import { sql } from "drizzle-orm";
+import { pgTable, text, boolean, uuid, timestamp, date, bigint, index } from "drizzle-orm/pg-core";
 
-export const employees = sqliteTable("employees", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const employees = pgTable("employees", {
+  id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
   email: text("email"),
-  telegramUserId: integer("telegram_user_id"),
-  telegramUsername: text("telegram_username"),
   role: text("role"),
   department: text("department"),
-  isActive: integer("is_active", { mode: "boolean" }).default(true),
-  createdAt: text("created_at").default(sql`(datetime('now'))`),
-});
+  isActive: boolean("is_active").default(true),
+  // Google
+  googleEmail: text("google_email"),
+  googleUserId: text("google_user_id"),
+  // Notion
+  notionUserId: text("notion_user_id"),
+  notionUserName: text("notion_user_name"),
+  // Slack
+  slackMemberId: text("slack_member_id").unique(),
+  slackUsername: text("slack_username"),
+  // Telegram
+  telegramUserId: bigint("telegram_user_id", { mode: "number" }).unique(),
+  telegramUsername: text("telegram_username"),
+  // Timestamps
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index("idx_employees_active").on(t.isActive),
+]);
 
-export const clients = sqliteTable("clients", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const clients = pgTable("clients", {
+  id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
   company: text("company"),
   email: text("email"),
-  telegramChatId: integer("telegram_chat_id"),
+  telegramChatId: bigint("telegram_chat_id", { mode: "number" }),
   notes: text("notes"),
-  isActive: integer("is_active", { mode: "boolean" }).default(true),
-  createdAt: text("created_at").default(sql`(datetime('now'))`),
+  isActive: boolean("is_active").default(true),
+  // External refs
+  notionPageId: text("notion_page_id"),
+  slackChannelId: text("slack_channel_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
 });
 
-export const tasks = sqliteTable("tasks", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const tasks = pgTable("tasks", {
+  id: uuid("id").primaryKey().defaultRandom(),
   title: text("title").notNull(),
   description: text("description"),
   status: text("status").default("pending"), // pending, in_progress, done, cancelled
   priority: text("priority").default("medium"), // low, medium, high, urgent
-  assignedTo: integer("assigned_to").references(() => employees.id),
-  clientId: integer("client_id").references(() => clients.id),
-  dueDate: text("due_date"), // ISO datetime string
-  reminderAt: text("reminder_at"),
-  reminderSent: integer("reminder_sent", { mode: "boolean" }).default(false),
-  source: text("source"), // manual, kanbanchi, calendar
+  assignedTo: uuid("assigned_to").references(() => employees.id),
+  clientId: uuid("client_id").references(() => clients.id),
+  dueDate: timestamp("due_date", { withTimezone: true }),
+  reminderAt: timestamp("reminder_at", { withTimezone: true }),
+  reminderSent: boolean("reminder_sent").default(false),
+  source: text("source"), // manual, notion, calendar
   externalId: text("external_id"),
-  createdAt: text("created_at").default(sql`(datetime('now'))`),
-  updatedAt: text("updated_at").default(sql`(datetime('now'))`),
-});
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index("idx_tasks_status").on(t.status),
+  index("idx_tasks_assigned").on(t.assignedTo),
+  index("idx_tasks_due").on(t.dueDate),
+  index("idx_tasks_external").on(t.source, t.externalId),
+]);
 
-export const messageLogs = sqliteTable("message_logs", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  source: text("source").notNull(), // telegram, gmail, kanbanchi
-  chatId: integer("chat_id"),
+export const messageLogs = pgTable("message_logs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  source: text("source").notNull(), // telegram, slack, gmail
+  employeeId: uuid("employee_id").references(() => employees.id),
+  chatId: bigint("chat_id", { mode: "number" }),
   chatTitle: text("chat_title"),
   senderName: text("sender_name"),
-  senderId: integer("sender_id"),
+  senderId: text("sender_id"),
   content: text("content").notNull(),
   urgency: text("urgency").default("normal"), // low, normal, high, critical
-  needsReply: integer("needs_reply", { mode: "boolean" }).default(false),
-  replied: integer("replied", { mode: "boolean" }).default(false),
-  notifiedOwner: integer("notified_owner", { mode: "boolean" }).default(false),
-  receivedAt: text("received_at").default(sql`(datetime('now'))`),
-  createdAt: text("created_at").default(sql`(datetime('now'))`),
-});
+  needsReply: boolean("needs_reply").default(false),
+  replied: boolean("replied").default(false),
+  notifiedOwner: boolean("notified_owner").default(false),
+  receivedAt: timestamp("received_at", { withTimezone: true }).defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index("idx_msglogs_source_received").on(t.source, t.receivedAt),
+  index("idx_msglogs_pending").on(t.needsReply, t.replied),
+  index("idx_msglogs_employee").on(t.employeeId, t.receivedAt),
+]);
 
-export const dailyReports = sqliteTable("daily_reports", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  reportDate: text("report_date").notNull(), // YYYY-MM-DD
+export const dailyReports = pgTable("daily_reports", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  reportDate: date("report_date").notNull(),
   reportType: text("report_type").default("daily"), // daily, weekly, on_demand
   content: text("content").notNull(),
   sentVia: text("sent_via").default("telegram"),
-  createdAt: text("created_at").default(sql`(datetime('now'))`),
-});
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index("idx_reports_date").on(t.reportDate),
+]);

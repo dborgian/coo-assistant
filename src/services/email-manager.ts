@@ -1,5 +1,6 @@
 import { google } from "googleapis";
 import type { Bot } from "grammy";
+import { and, eq, sql } from "drizzle-orm";
 import { agent } from "../core/agent.js";
 import { config } from "../config.js";
 import { getGoogleAuth, isGoogleConfigured } from "../core/google-auth.js";
@@ -70,11 +71,16 @@ export async function checkImportantEmails(bot: Bot): Promise<void> {
 
   for (const email of emails) {
     // Dedup: skip if already notified
-    const alreadyLogged = db
-      .select()
+    const [alreadyLogged] = await db
+      .select({ id: messageLogs.id })
       .from(messageLogs)
-      .all()
-      .find((m) => m.source === "gmail" && m.content.includes(email.id));
+      .where(
+        and(
+          eq(messageLogs.source, "gmail"),
+          sql`${messageLogs.content} LIKE ${'%' + email.id + '%'}`,
+        ),
+      )
+      .limit(1);
 
     if (alreadyLogged) continue;
 
@@ -86,16 +92,15 @@ export async function checkImportantEmails(bot: Bot): Promise<void> {
     );
 
     // Log to database
-    db.insert(messageLogs)
+    await db.insert(messageLogs)
       .values({
         source: "gmail",
         chatTitle: "Gmail",
         senderName: email.from,
-        content: `[${email.id}] ${email.subject}: ${email.snippet}`,
+        content: `[${email.id}] ${email.subject}: ${email.snippet}`.slice(0, 500),
         urgency: classification.urgency,
         needsReply: classification.needs_reply,
-      })
-      .run();
+      });
 
     // Notify if high/critical
     if (classification.urgency === "high" || classification.urgency === "critical") {
@@ -112,6 +117,46 @@ export async function checkImportantEmails(bot: Bot): Promise<void> {
 
       await bot.api.sendMessage(config.TELEGRAM_OWNER_CHAT_ID, msg, { parse_mode: "HTML" });
     }
+  }
+}
+
+export async function sendEmail(
+  to: string,
+  subject: string,
+  body: string,
+): Promise<boolean> {
+  const auth = getGoogleAuth();
+  if (!auth) {
+    logger.warn("Cannot send email — Google not configured");
+    return false;
+  }
+
+  const gmail = google.gmail({ version: "v1", auth });
+
+  const rawMessage = [
+    `To: ${to}`,
+    `Subject: ${subject}`,
+    "Content-Type: text/plain; charset=utf-8",
+    "",
+    body,
+  ].join("\r\n");
+
+  const encoded = Buffer.from(rawMessage)
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+
+  try {
+    await gmail.users.messages.send({
+      userId: "me",
+      requestBody: { raw: encoded },
+    });
+    logger.info({ to, subject }, "Email sent successfully");
+    return true;
+  } catch (err) {
+    logger.error({ err, to, subject }, "Failed to send email");
+    return false;
   }
 }
 

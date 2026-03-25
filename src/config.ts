@@ -32,8 +32,14 @@ const envSchema = z.object({
   // Gmail
   EMAIL_CHECK_INTERVAL_MINUTES: z.coerce.number().default(10),
 
+  // Google Drive
+  COO_DRIVE_FOLDER_ID: z.string().default(""),
+  DRIVE_DAILY_FOLDER_ID: z.string().default(""),
+  DRIVE_EMPLOYEE_FOLDER_ID: z.string().default(""),
+
   // Slack (Socket Mode for real-time monitoring)
   SLACK_BOT_TOKEN: z.string().default(""),
+  SLACK_NOTIFICATIONS_CHANNEL: z.string().default(""),
   SLACK_APP_TOKEN: z.string().default(""),
   SLACK_SIGNING_SECRET: z.string().default(""),
   MONITORED_SLACK_CHANNELS: z
@@ -41,13 +47,17 @@ const envSchema = z.object({
     .default("[]")
     .transform((v) => JSON.parse(v) as string[]),
 
-  // Kanbanchi (via Google Drive backup)
-  KANBANCHI_FOLDER_ID: z.string().default(""),
-  KANBANCHI_BOARD_NAME: z.string().default(""),
-  KANBANCHI_SYNC_INTERVAL_MINUTES: z.coerce.number().default(30),
+  // Notion (internal integration)
+  NOTION_API_KEY: z.string().default(""),
+  NOTION_TASKS_DATABASE_ID: z.string().default(""),
+  NOTION_PROJECTS_DATABASE_ID: z.string().default(""),
+  NOTION_SYNC_INTERVAL_MINUTES: z.coerce.number().default(15),
 
-  // Database
-  DATABASE_PATH: z.string().default("./data/coo.db"),
+  // Supabase (PostgreSQL)
+  SUPABASE_DB_URL: z.string(),
+
+  // Message retention
+  MESSAGE_RETENTION_DAYS: z.coerce.number().default(90),
 
   // Scheduling
   DAILY_REPORT_HOUR: z.coerce.number().default(8),

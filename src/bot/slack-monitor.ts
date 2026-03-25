@@ -125,16 +125,16 @@ async function handleSlackMessage(
   );
 
   // Store with source="slack"
-  db.insert(messageLogs)
+  await db.insert(messageLogs)
     .values({
       source: "slack",
       chatTitle: `#${channelName}`,
       senderName,
-      content: messageText,
+      senderId: senderId ?? null,
+      content: messageText.slice(0, 500),
       urgency: classification.urgency,
       needsReply: classification.needs_reply,
-    })
-    .run();
+    });
 
   // Notify owner via Telegram for ALL Slack messages
   {
@@ -182,4 +182,23 @@ export function addMonitoredSlackChannel(channelId: string): void {
 export function removeMonitoredSlackChannel(channelId: string): void {
   const idx = config.MONITORED_SLACK_CHANNELS.indexOf(channelId);
   if (idx !== -1) config.MONITORED_SLACK_CHANNELS.splice(idx, 1);
+}
+
+export async function sendSlackMessage(channelId: string, text: string): Promise<boolean> {
+  if (!slackApp) {
+    logger.warn("Slack not connected - cannot send message");
+    return false;
+  }
+
+  try {
+    await slackApp.client.chat.postMessage({
+      channel: channelId,
+      text,
+    });
+    logger.info({ channel: channelId }, "Slack message sent");
+    return true;
+  } catch (err) {
+    logger.error({ err, channel: channelId }, "Failed to send Slack message");
+    return false;
+  }
 }

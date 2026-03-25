@@ -10,7 +10,7 @@ interface ScheduledJobs {
   calendarCheck?: cron.ScheduledTask;
   emailCheck?: cron.ScheduledTask;
   taskReminders?: cron.ScheduledTask;
-  kanbanchiSync?: cron.ScheduledTask;
+  notionSync?: cron.ScheduledTask;
 }
 
 const jobs: ScheduledJobs = {};
@@ -21,7 +21,7 @@ export function setupSchedules(callbacks: {
   calendarCheck: JobCallback;
   emailCheck: JobCallback;
   taskReminders: JobCallback;
-  kanbanchiSync: JobCallback;
+  notionSync: JobCallback;
 }): void {
   // Daily operations report
   const { DAILY_REPORT_HOUR: h, DAILY_REPORT_MINUTE: m, TIMEZONE: tz } = config;
@@ -59,10 +59,10 @@ export function setupSchedules(callbacks: {
     );
   });
 
-  // Kanbanchi board sync (every N minutes)
-  jobs.kanbanchiSync = cron.schedule(`*/${config.KANBANCHI_SYNC_INTERVAL_MINUTES} * * * *`, () => {
-    callbacks.kanbanchiSync().catch((err) =>
-      logger.error({ err }, "Kanbanchi sync failed"),
+  // Notion sync (every N minutes)
+  jobs.notionSync = cron.schedule(`*/${config.NOTION_SYNC_INTERVAL_MINUTES} * * * *`, () => {
+    callbacks.notionSync().catch((err) =>
+      logger.error({ err }, "Notion sync failed"),
     );
   });
 

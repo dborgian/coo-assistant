@@ -6,9 +6,9 @@ import { messageLogs } from "../models/schema.js";
 import { logger } from "../utils/logger.js";
 
 export async function checkPendingMessages(bot: Bot): Promise<void> {
-  const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+  const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
 
-  const staleMessages = db
+  const staleMessages = await db
     .select()
     .from(messageLogs)
     .where(
@@ -18,8 +18,7 @@ export async function checkPendingMessages(bot: Bot): Promise<void> {
         eq(messageLogs.notifiedOwner, true),
         lt(messageLogs.receivedAt, twoHoursAgo),
       ),
-    )
-    .all();
+    );
 
   if (!staleMessages.length) return;
 

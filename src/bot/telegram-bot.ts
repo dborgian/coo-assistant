@@ -4,19 +4,49 @@ import {
   addClientCommand,
   addEmployeeCommand,
   askCommand,
+  dashboardCommand,
+  driveCommand,
+  employeeReportCommand,
   helpCommand,
   monitorCommand,
+  notionCommand,
   remindCommand,
+  reportPdfCommand,
+  reportsCommand,
   slackCommand,
+  slackReportCommand,
+  slackSummaryCommand,
   reportCommand,
   startCommand,
   statusCommand,
   tasksCommand,
 } from "./commands.js";
+import { registerCallbacks } from "./callbacks.js";
 import { logger } from "../utils/logger.js";
 
 export function createBot(): Bot {
   const bot = new Bot(config.TELEGRAM_BOT_TOKEN);
+
+  // Set command menu for Telegram autocomplete
+  bot.api.setMyCommands([
+    { command: "dashboard", description: "Interactive dashboard" },
+    { command: "status", description: "Quick operations overview" },
+    { command: "report", description: "Generate operations report" },
+    { command: "report_pdf", description: "Generate PDF report (daily/weekly)" },
+    { command: "employee_report", description: "Employee activity report (PDF)" },
+    { command: "drive", description: "COO Drive files" },
+    { command: "reports", description: "View report history" },
+    { command: "tasks", description: "View active tasks" },
+    { command: "notion", description: "Notion workspace summary" },
+    { command: "slack_report", description: "Slack digest (24h)" },
+    { command: "slack_summary", description: "AI Slack summary" },
+    { command: "remind", description: "Set a reminder" },
+    { command: "add_employee", description: "Add team member" },
+    { command: "add_client", description: "Add client" },
+    { command: "monitor", description: "Configure Telegram monitoring" },
+    { command: "slack", description: "Configure Slack monitoring" },
+    { command: "help", description: "Show all commands" },
+  ]).catch((err) => logger.warn({ err }, "Failed to set bot commands menu"));
 
   // Middleware: only allow owner
   bot.use(async (ctx, next) => {
@@ -26,14 +56,25 @@ export function createBot(): Bot {
 
   bot.command("start", startCommand);
   bot.command("help", helpCommand);
+  bot.command("dashboard", dashboardCommand);
   bot.command("status", statusCommand);
   bot.command("report", reportCommand);
+  bot.command("report_pdf", reportPdfCommand);
+  bot.command("employee_report", employeeReportCommand);
+  bot.command("drive", driveCommand);
+  bot.command("reports", reportsCommand);
   bot.command("tasks", tasksCommand);
+  bot.command("notion", notionCommand);
+  bot.command("slack_report", slackReportCommand);
+  bot.command("slack_summary", slackSummaryCommand);
   bot.command("remind", remindCommand);
   bot.command("add_employee", addEmployeeCommand);
   bot.command("add_client", addClientCommand);
   bot.command("monitor", monitorCommand);
   bot.command("slack", slackCommand);
+
+  // Register inline keyboard callback handlers
+  registerCallbacks(bot);
 
   // Free-form messages go to the AI agent
   bot.on("message:text", askCommand);

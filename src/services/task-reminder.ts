@@ -7,12 +7,11 @@ import { logger } from "../utils/logger.js";
 
 export async function checkAndSendReminders(bot: Bot): Promise<void> {
   const now = new Date();
-  const oneHourLater = new Date(now.getTime() + 60 * 60 * 1000).toISOString();
-  const oneDayLater = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
-  const nowStr = now.toISOString();
+  const oneHourLater = new Date(now.getTime() + 60 * 60 * 1000);
+  const oneDayLater = new Date(now.getTime() + 24 * 60 * 60 * 1000);
 
   // Tasks with explicit reminder times
-  const dueReminders = db
+  const dueReminders = await db
     .select()
     .from(tasks)
     .where(
@@ -22,26 +21,24 @@ export async function checkAndSendReminders(bot: Bot): Promise<void> {
         eq(tasks.reminderSent, false),
         inArray(tasks.status, ["pending", "in_progress"]),
       ),
-    )
-    .all();
+    );
 
   // Tasks due within 24 hours
-  const dueToday = db
+  const dueToday = await db
     .select()
     .from(tasks)
     .where(
       and(
         isNotNull(tasks.dueDate),
         lte(tasks.dueDate, oneDayLater),
-        gte(tasks.dueDate, nowStr),
+        gte(tasks.dueDate, now),
         eq(tasks.reminderSent, false),
         inArray(tasks.status, ["pending", "in_progress"]),
       ),
-    )
-    .all();
+    );
 
   // Deduplicate by task id
-  const seen = new Set<number>();
+  const seen = new Set<string>();
   const tasksToRemind = [...dueReminders, ...dueToday].filter((t) => {
     if (seen.has(t.id)) return false;
     seen.add(t.id);
@@ -53,11 +50,12 @@ export async function checkAndSendReminders(bot: Bot): Promise<void> {
   for (const task of tasksToRemind) {
     let assignee: { name: string } | undefined;
     if (task.assignedTo) {
-      assignee = db
+      const [row] = await db
         .select({ name: employees.name })
         .from(employees)
         .where(eq(employees.id, task.assignedTo))
-        .get();
+        .limit(1);
+      assignee = row;
     }
 
     const assigneeText = assignee ? ` (assigned to ${assignee.name})` : "";
@@ -75,10 +73,9 @@ export async function checkAndSendReminders(bot: Bot): Promise<void> {
         parse_mode: "HTML",
       });
 
-      db.update(tasks)
+      await db.update(tasks)
         .set({ reminderSent: true })
-        .where(eq(tasks.id, task.id))
-        .run();
+        .where(eq(tasks.id, task.id));
 
       logger.info(
         { task: task.title, assignee: assignee?.name ?? "unassigned" },
