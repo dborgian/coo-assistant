@@ -21,6 +21,45 @@ import {
 } from "./slack-monitor.js";
 
 export async function startCommand(ctx: CommandContext<Context>): Promise<void> {
+  const user = getAuthUser(ctx);
+  const role = user?.role ?? "viewer";
+  const name = user?.name ?? "utente";
+
+  if (role === "viewer") {
+    await ctx.reply(
+      `<b>Ciao ${name}!</b>\n\n` +
+        "Sono il COO Assistant. Ecco cosa posso fare per te:\n\n" +
+        "/dashboard \u2014 I tuoi task e overview\n" +
+        "/tasks \u2014 I tuoi task attivi\n" +
+        "/status \u2014 Stato generale\n" +
+        "/help \u2014 Aiuto\n\n" +
+        "Oppure scrivimi in linguaggio naturale per info sui tuoi task.",
+      { parse_mode: "HTML" },
+    );
+    return;
+  }
+
+  if (role === "admin") {
+    await ctx.reply(
+      `<b>Ciao ${name}!</b>\n\n` +
+        "Sono il COO Assistant. Come admin hai accesso a:\n\n" +
+        "/dashboard \u2014 Dashboard interattiva\n" +
+        "/status \u2014 Operations overview\n" +
+        "/tasks \u2014 Tutti i task attivi\n" +
+        "/report \u2014 Genera report operativo\n" +
+        "/report_pdf \u2014 Report PDF\n" +
+        "/notion \u2014 Notion workspace\n" +
+        "/drive \u2014 File su Drive\n" +
+        "/slack_report \u2014 Digest Slack\n" +
+        "/remind \u2014 Imposta reminder\n" +
+        "/help \u2014 Tutti i comandi\n\n" +
+        "Oppure scrivimi qualsiasi domanda.",
+      { parse_mode: "HTML" },
+    );
+    return;
+  }
+
+  // Owner: full command list
   await ctx.reply(
     "<b>COO Assistant Online</b>\n\n" +
       "I'm your AI Chief Operating Officer. I monitor communications, " +
@@ -49,69 +88,86 @@ export async function startCommand(ctx: CommandContext<Context>): Promise<void> 
 }
 
 export async function helpCommand(ctx: CommandContext<Context>): Promise<void> {
-  await ctx.reply(
-    "<b>COO Assistant \u2014 Commands</b>\n\n" +
-      "<b>/dashboard</b> \u2014 Interactive dashboard with buttons\n" +
-      "<b>/status</b> \u2014 Quick ops overview (tasks, messages, upcoming)\n" +
-      "<b>/report</b> \u2014 Full daily operations report\n" +
-      "<b>/reports</b> \u2014 Report history (add date for specific: /reports 2026-03-24)\n" +
-      "<b>/tasks</b> \u2014 List active tasks (add 'overdue' for overdue only)\n" +
-      "<b>/slack_report</b> \u2014 Slack digest organized by channel (last 24h)\n" +
-      "<b>/slack_summary</b> \u2014 AI-generated summary of Slack conversations\n" +
-      "<b>/remind [person] [task] [time]</b> \u2014 Set reminder\n" +
-      "  Example: /remind John Submit report tomorrow 9am\n" +
-      "<b>/add_employee [name] [email] [role]</b> \u2014 Add team member\n" +
-      "<b>/add_client [name] [company] [email]</b> \u2014 Add client\n" +
-      "<b>/monitor add [chat_id]</b> \u2014 Add Telegram chat to monitor\n" +
-      "<b>/monitor list</b> \u2014 Show monitored Telegram chats\n" +
-      "<b>/notion</b> \u2014 Notion workspace summary (tasks, projects)\n" +
-      "<b>/slack add [channel_id]</b> \u2014 Add Slack channel to monitor\n" +
-      "<b>/slack list</b> \u2014 Show monitored Slack channels\n" +
-      "<b>/slack remove [channel_id]</b> \u2014 Stop monitoring channel\n\n" +
-      "Any other message \u2192 I'll answer as your COO assistant.",
-    { parse_mode: "HTML" },
-  );
+  const user = getAuthUser(ctx);
+  const role = user?.role ?? "viewer";
+
+  const viewerCmds =
+    "<b>/dashboard</b> \u2014 I tuoi task e overview\n" +
+    "<b>/tasks</b> \u2014 I tuoi task attivi (aggiungi 'overdue' per solo scaduti)\n" +
+    "<b>/status</b> \u2014 Stato generale\n";
+
+  const adminCmds =
+    "<b>/report</b> \u2014 Report operativo completo\n" +
+    "<b>/report_pdf</b> \u2014 Report PDF (aggiungi 'weekly' per settimanale)\n" +
+    "<b>/employee_report [nome]</b> \u2014 Report attivita' employee\n" +
+    "<b>/reports</b> \u2014 Storico report\n" +
+    "<b>/notion</b> \u2014 Notion workspace\n" +
+    "<b>/drive</b> \u2014 File su Drive\n" +
+    "<b>/slack_report</b> \u2014 Digest Slack (24h)\n" +
+    "<b>/slack_summary</b> \u2014 Riassunto AI Slack\n" +
+    "<b>/remind [persona] [task]</b> \u2014 Imposta reminder\n";
+
+  const ownerCmds =
+    "<b>/add_employee [nome] [email] [ruolo] [access:admin|viewer]</b> \u2014 Aggiungi membro\n" +
+    "<b>/add_client [nome] [azienda] [email]</b> \u2014 Aggiungi cliente\n" +
+    "<b>/monitor add [chat_id]</b> \u2014 Monitora chat Telegram\n" +
+    "<b>/slack add [channel_id]</b> \u2014 Monitora canale Slack\n";
+
+  let text = "<b>COO Assistant \u2014 Comandi</b>\n\n" + viewerCmds;
+  if (role === "admin" || role === "owner") text += "\n" + adminCmds;
+  if (role === "owner") text += "\n" + ownerCmds;
+  text += "\nScrivi qualsiasi messaggio \u2192 rispondo come COO assistant.";
+
+  await ctx.reply(text, { parse_mode: "HTML" });
 }
 
 export async function statusCommand(ctx: CommandContext<Context>): Promise<void> {
   const now = new Date();
+  const user = getAuthUser(ctx);
+  const role = user?.role ?? "viewer";
 
-  const [taskRow] = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(tasks)
+  if (role === "viewer" && user?.employeeId) {
+    // Viewer: only own task counts
+    const [myTaskRow] = await db.select({ count: sql<number>`count(*)` }).from(tasks)
+      .where(and(eq(tasks.assignedTo, user.employeeId), inArray(tasks.status, ["pending", "in_progress"])));
+    const [myOverdueRow] = await db.select({ count: sql<number>`count(*)` }).from(tasks)
+      .where(and(eq(tasks.assignedTo, user.employeeId), inArray(tasks.status, ["pending", "in_progress"]), lt(tasks.dueDate, now)));
+    const [totalRow] = await db.select({ count: sql<number>`count(*)` }).from(tasks)
+      .where(inArray(tasks.status, ["pending", "in_progress"]));
+
+    let statusText = `<b>Il tuo status</b>\n\n`;
+    statusText += `<b>I tuoi task:</b> ${myTaskRow?.count ?? 0} attivi`;
+    if (myOverdueRow?.count) statusText += ` (${myOverdueRow.count} scaduti)`;
+    statusText += `\n<b>Task team totali:</b> ${totalRow?.count ?? 0}`;
+
+    await ctx.reply(statusText, { parse_mode: "HTML" });
+    return;
+  }
+
+  // Admin + Owner: full status
+  const [taskRow] = await db.select({ count: sql<number>`count(*)` }).from(tasks)
     .where(inArray(tasks.status, ["pending", "in_progress"]));
   const taskCount = taskRow?.count ?? 0;
 
-  const [overdueRow] = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(tasks)
+  const [overdueRow] = await db.select({ count: sql<number>`count(*)` }).from(tasks)
     .where(and(inArray(tasks.status, ["pending", "in_progress"]), lt(tasks.dueDate, now)));
   const overdueCount = overdueRow?.count ?? 0;
 
-  const [msgRow] = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(messageLogs)
+  const [msgRow] = await db.select({ count: sql<number>`count(*)` }).from(messageLogs)
     .where(and(eq(messageLogs.needsReply, true), eq(messageLogs.replied, false)));
   const unreadMsgs = msgRow?.count ?? 0;
 
-  const [empRow] = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(employees)
+  const [empRow] = await db.select({ count: sql<number>`count(*)` }).from(employees)
     .where(eq(employees.isActive, true));
   const employeeCount = empRow?.count ?? 0;
 
-  const [cliRow] = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(clients)
+  const [cliRow] = await db.select({ count: sql<number>`count(*)` }).from(clients)
     .where(eq(clients.isActive, true));
   const clientCount = cliRow?.count ?? 0;
 
-  let statusText =
-    `<b>Operations Status</b>\n\n` +
-    `<b>Tasks:</b> ${taskCount} active`;
+  let statusText = `<b>Operations Status</b>\n\n<b>Tasks:</b> ${taskCount} active`;
   if (overdueCount) statusText += ` (${overdueCount} overdue)`;
-  statusText +=
-    `\n<b>Messages needing reply:</b> ${unreadMsgs}` +
+  statusText += `\n<b>Messages needing reply:</b> ${unreadMsgs}` +
     `\n<b>Team:</b> ${employeeCount} members` +
     `\n<b>Clients:</b> ${clientCount} active`;
 
@@ -528,7 +584,8 @@ Be concise but thorough. Use bullet points. Format for Telegram (no HTML, no mar
 }
 
 export async function dashboardCommand(ctx: CommandContext<Context>): Promise<void> {
-  const { text, keyboard } = await buildDashboardMessage();
+  const user = getAuthUser(ctx);
+  const { text, keyboard } = await buildDashboardMessage(user?.role ?? "viewer", user?.employeeId ?? null);
   await ctx.reply(text, { parse_mode: "HTML", reply_markup: keyboard });
 }
 
@@ -732,7 +789,11 @@ export async function askCommand(ctx: Context): Promise<void> {
   const user = getAuthUser(ctx);
   logger.info({ query: query.slice(0, 100), user: user?.name, role: user?.role }, "User query received");
 
-  const { text, files } = await agent.answerQuery(query);
+  const { text, files } = await agent.answerQuery(
+    query,
+    user?.role ?? "viewer",
+    user?.employeeId ?? null,
+  );
 
   if (text.length > 4000) {
     for (let i = 0; i < text.length; i += 4000) {

@@ -9,6 +9,9 @@ import { getTodayEvents } from "../services/calendar-sync.js";
 import { getUnreadImportantEmails } from "../services/email-manager.js";
 import { getNotionWorkspaceSummary, isNotionConfigured } from "../services/notion-sync.js";
 import { listDriveFiles } from "../services/drive-manager.js";
+import type { AccessRole } from "./auth.js";
+import { getAuthUser } from "./auth.js";
+import { canAccessSection } from "./permissions.js";
 
 const MAX_MSG_LEN = 4096;
 
@@ -26,26 +29,47 @@ function backButton(): InlineKeyboard {
   return new InlineKeyboard().text("\u2190 Dashboard", "dash:back");
 }
 
-export async function buildDashboardMessage(): Promise<{ text: string; keyboard: InlineKeyboard }> {
+export async function buildDashboardMessage(
+  role: AccessRole = "owner",
+  employeeId: string | null = null,
+): Promise<{ text: string; keyboard: InlineKeyboard }> {
   const now = new Date();
   const today = now.toISOString().split("T")[0];
   const dateStr = now.toLocaleDateString("it-IT", { day: "2-digit", month: "2-digit", year: "numeric" });
 
-  const [taskRow] = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(tasks)
+  if (role === "viewer" && employeeId) {
+    // Viewer: only own tasks + calendar
+    const [myTaskRow] = await db.select({ count: sql<number>`count(*)` }).from(tasks)
+      .where(and(eq(tasks.assignedTo, employeeId), inArray(tasks.status, ["pending", "in_progress"])));
+    const [myOverdueRow] = await db.select({ count: sql<number>`count(*)` }).from(tasks)
+      .where(and(eq(tasks.assignedTo, employeeId), inArray(tasks.status, ["pending", "in_progress"]), lt(tasks.dueDate, now)));
+    const calendarEvents = await getTodayEvents().catch(() => []);
+
+    const text =
+      `<b>Dashboard</b> \u2014 ${dateStr}\n` +
+      `\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n` +
+      `\uD83D\uDCCB I tuoi task: ${myTaskRow?.count ?? 0} attivi` +
+      (myOverdueRow?.count ? ` (${myOverdueRow.count} scaduti)` : "") + `\n` +
+      `\uD83D\uDCC5 Calendario: ${calendarEvents.length} eventi oggi` +
+      `\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501`;
+
+    const keyboard = new InlineKeyboard()
+      .text("\uD83D\uDCCB I miei task", "dash:tasks")
+      .text("\uD83D\uDCC5 Calendario", "dash:calendar");
+
+    return { text, keyboard };
+  }
+
+  // Admin + Owner: full dashboard
+  const [taskRow] = await db.select({ count: sql<number>`count(*)` }).from(tasks)
     .where(inArray(tasks.status, ["pending", "in_progress"]));
   const taskCount = taskRow?.count ?? 0;
 
-  const [overdueRow] = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(tasks)
+  const [overdueRow] = await db.select({ count: sql<number>`count(*)` }).from(tasks)
     .where(and(inArray(tasks.status, ["pending", "in_progress"]), lt(tasks.dueDate, now)));
   const overdueCount = overdueRow?.count ?? 0;
 
-  const [slackRow] = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(messageLogs)
+  const [slackRow] = await db.select({ count: sql<number>`count(*)` }).from(messageLogs)
     .where(and(sql`${messageLogs.receivedAt}::date = ${today}`, eq(messageLogs.source, "slack")));
   const slackToday = slackRow?.count ?? 0;
 
@@ -93,7 +117,8 @@ export function registerCallbacks(bot: Bot): void {
 async function handleBack(ctx: Context): Promise<void> {
   await ctx.answerCallbackQuery();
   try {
-    const { text, keyboard } = await buildDashboardMessage();
+    const user = getAuthUser(ctx);
+    const { text, keyboard } = await buildDashboardMessage(user?.role ?? "viewer", user?.employeeId ?? null);
     await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
   } catch (err) {
     logger.error({ err }, "Dashboard back failed");
@@ -104,10 +129,11 @@ async function handleTasks(ctx: Context): Promise<void> {
   await ctx.answerCallbackQuery();
   try {
     const now = new Date();
-    const allTasks = await db
-      .select()
-      .from(tasks)
-      .where(inArray(tasks.status, ["pending", "in_progress"]));
+    const user = getAuthUser(ctx);
+    const conditions = user?.role === "viewer" && user.employeeId
+      ? and(eq(tasks.assignedTo, user.employeeId), inArray(tasks.status, ["pending", "in_progress"]))
+      : inArray(tasks.status, ["pending", "in_progress"]);
+    const allTasks = await db.select().from(tasks).where(conditions);
 
     if (!allTasks.length) {
       await ctx.editMessageText("\uD83D\uDCCB <b>Tasks</b>\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\nNo active tasks.", { parse_mode: "HTML", reply_markup: backButton() });
@@ -134,6 +160,11 @@ async function handleTasks(ctx: Context): Promise<void> {
 
 async function handleSlack(ctx: Context): Promise<void> {
   await ctx.answerCallbackQuery();
+  const user = getAuthUser(ctx);
+  if (!canAccessSection("dash:slack", user?.role ?? "viewer")) {
+    await ctx.answerCallbackQuery("Non hai accesso a questa sezione.");
+    return;
+  }
   try {
     const slackMessages = await db
       .select()
@@ -175,6 +206,11 @@ async function handleSlack(ctx: Context): Promise<void> {
 
 async function handleEmail(ctx: Context): Promise<void> {
   await ctx.answerCallbackQuery();
+  const user = getAuthUser(ctx);
+  if (!canAccessSection("dash:email", user?.role ?? "viewer")) {
+    await ctx.answerCallbackQuery("Non hai accesso a questa sezione.");
+    return;
+  }
   try {
     const emails = await getUnreadImportantEmails(5).catch(() => []);
 
@@ -225,6 +261,11 @@ async function handleCalendar(ctx: Context): Promise<void> {
 
 async function handleNotion(ctx: Context): Promise<void> {
   await ctx.answerCallbackQuery();
+  const user = getAuthUser(ctx);
+  if (!canAccessSection("dash:notion", user?.role ?? "viewer")) {
+    await ctx.answerCallbackQuery("Non hai accesso a questa sezione.");
+    return;
+  }
   try {
     if (!isNotionConfigured()) {
       await ctx.editMessageText(
@@ -278,6 +319,11 @@ async function handleNotion(ctx: Context): Promise<void> {
 
 async function handleDrive(ctx: Context): Promise<void> {
   await ctx.answerCallbackQuery();
+  const user = getAuthUser(ctx);
+  if (!canAccessSection("dash:drive", user?.role ?? "viewer")) {
+    await ctx.answerCallbackQuery("Non hai accesso a questa sezione.");
+    return;
+  }
   try {
     const files = await listDriveFiles(10);
 
@@ -305,6 +351,11 @@ async function handleDrive(ctx: Context): Promise<void> {
 
 async function handleReport(ctx: Context): Promise<void> {
   await ctx.answerCallbackQuery();
+  const user = getAuthUser(ctx);
+  if (!canAccessSection("dash:report", user?.role ?? "viewer")) {
+    await ctx.answerCallbackQuery("Non hai accesso a questa sezione.");
+    return;
+  }
   try {
     await ctx.editMessageText("\uD83D\uDCCA <b>Generating report...</b>", { parse_mode: "HTML" });
 
@@ -361,6 +412,11 @@ async function handleReport(ctx: Context): Promise<void> {
 
 async function handleHistory(ctx: Context): Promise<void> {
   await ctx.answerCallbackQuery();
+  const user = getAuthUser(ctx);
+  if (!canAccessSection("dash:history", user?.role ?? "viewer")) {
+    await ctx.answerCallbackQuery("Non hai accesso a questa sezione.");
+    return;
+  }
   try {
     const reports = await db
       .select()

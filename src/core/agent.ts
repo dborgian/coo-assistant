@@ -23,6 +23,8 @@ import { queryKnowledge } from "../services/knowledge-base.js";
 import { getTopics, getClientMentions } from "../services/topic-analyzer.js";
 import { getMeetingStats } from "../services/meeting-intelligence.js";
 import type { Tool, ToolResultBlockParam } from "@anthropic-ai/sdk/resources/messages.js";
+import type { AccessRole } from "../bot/auth.js";
+import { getAllowedToolNames } from "../bot/permissions.js";
 
 export interface AgentResponse {
   text: string;
@@ -1213,8 +1215,33 @@ Genera 5-10 task concreti e actionable.`,
     }
   }
 
-  async answerQuery(query: string): Promise<AgentResponse> {
-    this.collectedFiles = [];
+  private async buildContextForRole(
+    query: string,
+    role: AccessRole,
+    employeeId: string | null,
+  ): Promise<Record<string, unknown>> {
+    const context: Record<string, unknown> = {
+      today: new Date().toISOString().split("T")[0],
+    };
+
+    if (role === "viewer") {
+      // Viewer: only own tasks + calendar + basic counts
+      const myTasks = employeeId
+        ? await db.select().from(tasks).where(and(eq(tasks.assignedTo, employeeId), inArray(tasks.status, ["pending", "in_progress"])))
+        : [];
+
+      const [taskCountRow] = await db.select({ count: sql<number>`count(*)` }).from(tasks)
+        .where(inArray(tasks.status, ["pending", "in_progress"]));
+
+      const calendarEvents = await getTodayEvents().catch(() => []);
+
+      context.my_tasks = myTasks.map((t) => ({ id: t.id, title: t.title, status: t.status, priority: t.priority, due: t.dueDate }));
+      context.total_active_tasks = taskCountRow?.count ?? 0;
+      context.calendar_events_today = calendarEvents.map((e) => ({ summary: e.summary, start: e.start, end: e.end }));
+      return context;
+    }
+
+    // Admin + Owner: full operational data
     const [allEmployees, allClients, activeTasks] = await Promise.all([
       db.select().from(employees).where(eq(employees.isActive, true)),
       db.select().from(clients).where(eq(clients.isActive, true)),
@@ -1231,35 +1258,56 @@ Genera 5-10 task concreti e actionable.`,
     const recentSlackMessages = await db.select().from(messageLogs)
       .where(and(eq(messageLogs.source, "slack"), sql`${messageLogs.receivedAt} > now() - interval '24 hours'`));
 
+    context.employees = allEmployees.map((e) => ({ id: e.id, name: e.name, role: e.role }));
+    context.clients = allClients.map((c) => ({ id: c.id, name: c.name, company: c.company }));
+    context.active_tasks = activeTasks.map((t) => ({ id: t.id, title: t.title, status: t.status, priority: t.priority, due: t.dueDate }));
+    context.calendar_events_today = calendarEvents.map((e) => ({ summary: e.summary, start: e.start, end: e.end, location: e.location }));
+    context.unread_important_emails = importantEmails.map((e) => ({ from: e.from, subject: e.subject, snippet: e.snippet }));
+    context.recent_slack_messages = recentSlackMessages.map((m) => ({ channel: m.chatTitle, sender: m.senderName, urgency: m.urgency, summary: m.content.slice(0, 200), received: m.receivedAt }));
+    context.notion_tasks = notionData?.tasks.map((t) => ({ title: t.title, status: t.status, priority: t.priority, assignee: t.assignee, due: t.dueDate, overdue: t.isOverdue })) ?? [];
+    context.notion_projects = notionData?.projects.map((p) => ({ name: p.name, status: p.status, owner: p.owner })) ?? [];
+    context.drive_files = driveFiles.map((f) => ({ name: f.name, link: f.webViewLink, created: f.createdTime }));
+    context.slack_notifications_configured = !!config.SLACK_NOTIFICATIONS_CHANNEL;
+
+    // Historical data for date/employee queries
     const dateRange = parseDateKeywords(query);
     const employeeMatch = await findEmployeeInQuery(query);
 
-    let historicalData: Record<string, unknown> | null = null;
-    let employeeActivity: Record<string, unknown> | null = null;
-
-    if (dateRange) historicalData = await getActivityByDateRange(dateRange).catch(() => null);
+    if (dateRange) {
+      const historicalData = await getActivityByDateRange(dateRange).catch(() => null);
+      if (historicalData) context.historical_data = historicalData;
+    }
     if (employeeMatch && dateRange) {
-      employeeActivity = await getEmployeeActivity(employeeMatch.id, dateRange).catch(() => null);
+      const activity = await getEmployeeActivity(employeeMatch.id, dateRange).catch(() => null);
+      if (activity) context.employee_activity = activity;
     } else if (employeeMatch) {
       const weekAgo = new Date(); weekAgo.setDate(weekAgo.getDate() - 7);
-      employeeActivity = await getEmployeeActivity(employeeMatch.id, { start: weekAgo, end: new Date() }).catch(() => null);
+      const activity = await getEmployeeActivity(employeeMatch.id, { start: weekAgo, end: new Date() }).catch(() => null);
+      if (activity) context.employee_activity = activity;
     }
 
-    const context: Record<string, unknown> = {
-      today: new Date().toISOString().split("T")[0],
-      employees: allEmployees.map((e) => ({ id: e.id, name: e.name, role: e.role })),
-      clients: allClients.map((c) => ({ id: c.id, name: c.name, company: c.company })),
-      active_tasks: activeTasks.map((t) => ({ id: t.id, title: t.title, status: t.status, priority: t.priority, due: t.dueDate })),
-      calendar_events_today: calendarEvents.map((e) => ({ summary: e.summary, start: e.start, end: e.end, location: e.location })),
-      unread_important_emails: importantEmails.map((e) => ({ from: e.from, subject: e.subject, snippet: e.snippet })),
-      recent_slack_messages: recentSlackMessages.map((m) => ({ channel: m.chatTitle, sender: m.senderName, urgency: m.urgency, summary: m.content.slice(0, 200), received: m.receivedAt })),
-      notion_tasks: notionData?.tasks.map((t) => ({ title: t.title, status: t.status, priority: t.priority, assignee: t.assignee, due: t.dueDate, overdue: t.isOverdue })) ?? [],
-      notion_projects: notionData?.projects.map((p) => ({ name: p.name, status: p.status, owner: p.owner })) ?? [],
-      drive_files: driveFiles.map((f) => ({ name: f.name, link: f.webViewLink, created: f.createdTime })),
-      slack_notifications_configured: !!config.SLACK_NOTIFICATIONS_CHANNEL,
-    };
-    if (historicalData) context.historical_data = historicalData;
-    if (employeeActivity) context.employee_activity = employeeActivity;
+    return context;
+  }
+
+  async answerQuery(
+    query: string,
+    userRole: AccessRole = "owner",
+    employeeId: string | null = null,
+  ): Promise<AgentResponse> {
+    this.collectedFiles = [];
+
+    // Build context based on role
+    const context = await this.buildContextForRole(query, userRole, employeeId);
+
+    // Filter tools based on role
+    const allowedNames = getAllowedToolNames(userRole);
+    const filteredTools = this.tools.filter((t) => allowedNames.has(t.name));
+
+    // Build role-aware system prompt
+    const rolePromptSuffix = userRole === "owner" ? "" :
+      userRole === "admin"
+        ? "\n\nL'utente ha ruolo ADMIN. Puo' creare/modificare task, inviare messaggi, generare report. NON puo' accedere a: sentiment team, communication patterns, commitments, knowledge base, gestione team. Se chiede queste cose, rispondi che non ha i permessi."
+        : "\n\nL'utente ha ruolo VIEWER. Puo' SOLO consultare i propri task e il calendario. NON puo' creare/modificare task, inviare messaggi, vedere email, slack, report, o dati di altri employee. Se chiede queste cose, rispondi che non ha i permessi.";
 
     // --- Tool use loop ---
     const contextStr = `Context:\n\`\`\`json\n${JSON.stringify(context, null, 2)}\n\`\`\`\n\n${query}`;
@@ -1271,8 +1319,8 @@ Genera 5-10 task concreti e actionable.`,
       const response = await this.client.messages.create({
         model: this.model,
         max_tokens: 4096,
-        system: COO_SYSTEM_PROMPT,
-        tools: this.tools,
+        system: COO_SYSTEM_PROMPT + rolePromptSuffix,
+        tools: filteredTools,
         messages,
       });
 

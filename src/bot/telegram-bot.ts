@@ -58,11 +58,11 @@ export function createBot(): Bot {
   bot.command("dashboard", dashboardCommand);
   bot.command("status", statusCommand);
   bot.command("tasks", tasksCommand);
-  bot.command("notion", notionCommand);
-  bot.command("drive", driveCommand);
 
   // Commands for owner + admin only
   const adminGuard = requireRole("owner", "admin");
+  bot.command("notion", adminGuard, notionCommand);
+  bot.command("drive", adminGuard, driveCommand);
   bot.command("report", adminGuard, reportCommand);
   bot.command("report_pdf", adminGuard, reportPdfCommand);
   bot.command("employee_report", adminGuard, employeeReportCommand);
