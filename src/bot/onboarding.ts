@@ -111,15 +111,46 @@ export async function handleOAuthCode(ctx: Context): Promise<boolean> {
     const oauth2 = google.oauth2({ version: "v2", auth: oauth2Client });
     const { data: profile } = await oauth2.userinfo.get();
 
-    // Create employee record
     const name = profile.name || ctx.from?.first_name || "Utente";
     const email = profile.email ?? undefined;
+    const username = ctx.from?.username ?? null;
 
-    await createEmployee(ctx, {
-      name,
-      email,
-      googleRefreshToken: tokens.refresh_token,
-    });
+    // Check if an employee with this email already exists (pre-registered by admin)
+    let matched = false;
+    if (email) {
+      const [existing] = await db
+        .select()
+        .from(employees)
+        .where(eq(employees.email, email))
+        .limit(1);
+
+      if (existing) {
+        // Link existing employee to this Telegram user
+        await db
+          .update(employees)
+          .set({
+            telegramUserId: telegramId,
+            telegramUsername: username,
+            googleRefreshToken: tokens.refresh_token,
+            updatedAt: new Date(),
+          })
+          .where(eq(employees.id, existing.id));
+        matched = true;
+
+        logger.info(
+          { telegramId, email, employeeId: existing.id },
+          "Linked existing employee to Telegram user via email match",
+        );
+      }
+    }
+
+    if (!matched) {
+      await createEmployee(ctx, {
+        name,
+        email,
+        googleRefreshToken: tokens.refresh_token,
+      });
+    }
 
     pendingOAuth.delete(telegramId);
     clearAuthCache();
@@ -128,10 +159,11 @@ export async function handleOAuthCode(ctx: Context): Promise<boolean> {
       `Autenticazione completata!\n\n` +
         `Nome: ${name}\n` +
         (email ? `Email: ${email}\n` : "") +
+        (matched ? `(Account collegato al tuo profilo esistente)\n` : "") +
         `\nUsa /help per vedere i comandi disponibili.`,
     );
 
-    logger.info({ telegramId, email, name }, "First-time user completed OAuth onboarding");
+    logger.info({ telegramId, email, name, matched }, "First-time user completed OAuth onboarding");
     return true;
   } catch (err) {
     logger.error({ err, telegramId }, "OAuth code exchange failed");
