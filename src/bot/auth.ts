@@ -81,9 +81,23 @@ export async function authMiddleware(ctx: Context, next: NextFunction): Promise<
 
   const user = await resolveUser(telegramId);
   if (!user) {
+    // Allow /start through for unknown users (onboarding flow)
+    const text = ctx.message && "text" in ctx.message ? (ctx.message.text ?? "") : "";
+    if (text.startsWith("/start")) {
+      await next();
+      return;
+    }
+
+    // Allow text messages through if user is in onboarding (pasting OAuth code)
+    const { isAwaitingOAuth } = await import("./onboarding.js");
+    if (isAwaitingOAuth(telegramId)) {
+      await next();
+      return;
+    }
+
     logger.debug({ telegramId }, "Unauthorized Telegram user attempted access");
     await ctx.reply(
-      "Non sei autorizzato ad usare questo bot. Contatta l'amministratore.",
+      "Non sei autorizzato ad usare questo bot. Usa /start per registrarti.",
     ).catch(() => {});
     return;
   }

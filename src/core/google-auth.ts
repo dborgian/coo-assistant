@@ -51,3 +51,10 @@ export async function exchangeCode(code: string) {
   const { tokens } = await client.getToken(code);
   return tokens;
 }
+
+/** Create an OAuth2 client authenticated with a specific user's refresh token */
+export function getUserGoogleAuth(refreshToken: string) {
+  const client = createOAuth2Client();
+  client.setCredentials({ refresh_token: refreshToken });
+  return client;
+}

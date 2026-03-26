@@ -23,6 +23,7 @@ import {
 } from "./commands.js";
 import { registerCallbacks } from "./callbacks.js";
 import { authMiddleware, requireRole } from "./auth.js";
+import { handleOAuthCode, handleConnectGoogle, handleConnectGoogleCode } from "./onboarding.js";
 import { logger } from "../utils/logger.js";
 
 export function createBot(): Bot {
@@ -46,6 +47,7 @@ export function createBot(): Bot {
     { command: "add_client", description: "Add client" },
     { command: "monitor", description: "Configure Telegram monitoring" },
     { command: "slack", description: "Configure Slack monitoring" },
+    { command: "connect_google", description: "Connect/reconnect Google account" },
     { command: "help", description: "Show all commands" },
   ]).catch((err) => logger.warn({ err }, "Failed to set bot commands menu"));
 
@@ -71,6 +73,9 @@ export function createBot(): Bot {
   bot.command("slack_summary", adminGuard, slackSummaryCommand);
   bot.command("remind", adminGuard, remindCommand);
 
+  // Google OAuth connect/reconnect (any authenticated user)
+  bot.command("connect_google", handleConnectGoogle);
+
   // Commands for owner only
   const ownerGuard = requireRole("owner");
   bot.command("add_employee", ownerGuard, addEmployeeCommand);
@@ -81,8 +86,16 @@ export function createBot(): Bot {
   // Register inline keyboard callback handlers
   registerCallbacks(bot);
 
-  // Free-form messages go to the AI agent
-  bot.on("message:text", askCommand);
+  // Free-form messages: check for OAuth code first, then AI agent
+  bot.on("message:text", async (ctx, next) => {
+    // Check if user is in onboarding (pasting OAuth code)
+    const telegramId = ctx.from?.id;
+    if (telegramId) {
+      const handled = await handleOAuthCode(ctx) || await handleConnectGoogleCode(ctx);
+      if (handled) return;
+    }
+    await askCommand(ctx);
+  });
 
   // Error handler — prevents crashes on unhandled errors
   bot.catch((err) => {

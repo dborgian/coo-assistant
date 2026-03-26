@@ -21,9 +21,16 @@ import {
 } from "./slack-monitor.js";
 
 export async function startCommand(ctx: CommandContext<Context>): Promise<void> {
+  // Check if this is a first-time user (no auth user means not in DB)
   const user = getAuthUser(ctx);
-  const role = user?.role ?? "viewer";
-  const name = user?.name ?? "utente";
+  if (!user) {
+    const { handleFirstStart } = await import("./onboarding.js");
+    await handleFirstStart(ctx);
+    return;
+  }
+
+  const role = user.role;
+  const name = user.name;
 
   if (role === "viewer") {
     await ctx.reply(
