@@ -180,6 +180,75 @@ Summary of the week: tasks completed, created, trends, suggestions for next week
 
 ---
 
+---
+
+## Project Management
+
+### Auto-create a project
+```
+crea un progetto per il redesign del sito web, deadline 15 aprile
+```
+The AI generates 5-10 tasks automatically with estimates, priorities, and dependencies.
+
+### Check project ETA
+```
+qual è la data stimata di completamento del progetto redesign?
+```
+
+---
+
+## Company Intelligence
+
+### Team morale
+```
+come sta il morale del team?
+```
+
+### Unfulfilled commitments
+```
+chi ha promesso cosa e non l'ha fatto?
+```
+
+### Decisions made
+```
+quali decisioni abbiamo preso questa settimana?
+```
+
+### Knowledge base
+```
+cosa sappiamo del cliente Acme?
+```
+
+### Communication patterns
+```
+chi è silenzioso ultimamente?
+quanto tempo ci mette Marco a rispondere?
+```
+
+### Trending topics
+```
+di cosa si parla di più in azienda?
+```
+
+### Meeting stats
+```
+quanti meeting ho oggi?
+```
+
+---
+
+## Google Workspace Integration
+
+The bot uses Google Workspace to schedule tasks in each employee's calendar. Set the employee's Google email:
+
+```
+aggiorna l'email di Marco a marco@azienda.com
+```
+
+Tasks assigned to an employee are scheduled in **their** calendar, not yours.
+
+---
+
 ## FAQ
 
 **Q: The bot doesn't respond to my messages.**
@@ -199,3 +268,12 @@ A: The task needs both `estimatedMinutes` and `dueDate`. Use: "schedula il task 
 
 **Q: How do I stop escalation for a task?**
 A: Say "non escalare il task X per 3 giorni" or use the Snooze button in Slack.
+
+**Q: Tasks aren't appearing in the employee's calendar.**
+A: Set the employee's Google Workspace email: "aggiorna l'email di Marco a marco@azienda.com". The bot needs their email to write to their calendar.
+
+**Q: How does auto-project creation work?**
+A: Say "crea progetto X con deadline Y". The AI generates 5-10 tasks with estimates and dependencies. All tasks sync to Notion within 5 minutes.
+
+**Q: The knowledge base is empty.**
+A: Knowledge accumulates over time from conversations. It needs at least a few days of Slack/Telegram messages to extract useful facts.

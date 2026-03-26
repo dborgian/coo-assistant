@@ -41,12 +41,22 @@ export async function runAutoPrioritization(bot: Bot): Promise<void> {
 
     let newPriority: string | null = null;
 
+    // Upgrade priority based on approaching deadline
     if (daysUntilDue <= 0) {
       if (currentIdx < 3) newPriority = "urgent";
     } else if (daysUntilDue <= 1) {
       if (currentIdx < 2) newPriority = "high";
     } else if (daysUntilDue <= 3) {
       if (currentIdx < 1) newPriority = "medium";
+    }
+
+    // Downgrade priority if deadline was extended far into the future
+    if (!newPriority && daysUntilDue > 7 && currentIdx > 1) {
+      // urgent with 7+ days → high; high with 7+ days → keep
+      if (task.priority === "urgent") newPriority = "high";
+    }
+    if (!newPriority && daysUntilDue > 14 && currentIdx > 0) {
+      if (task.priority === "high") newPriority = "medium";
     }
 
     if (newPriority && newPriority !== task.priority) {

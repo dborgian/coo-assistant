@@ -207,45 +207,55 @@ export async function createNotionTask(
   const client = getClient();
 
   try {
-    // Discover schema to find the title property name
-    const dbInfo = await client.dataSources.retrieve({
-      data_source_id: config.NOTION_TASKS_DATABASE_ID,
-    }) as any;
+    // Try to discover schema; fall back to common title property names
+    let titlePropName = "Task name";
+    let dbInfo: any = null;
 
-    let titlePropName = "Name";
-    if (dbInfo.properties) {
-      for (const [name, prop] of Object.entries(dbInfo.properties) as [string, any][]) {
-        if (prop.type === "title") {
-          titlePropName = name;
-          break;
+    try {
+      dbInfo = await client.databases.retrieve({ database_id: config.NOTION_TASKS_DATABASE_ID }) as any;
+      if (dbInfo?.properties) {
+        for (const [name, prop] of Object.entries(dbInfo.properties) as [string, any][]) {
+          if (prop.type === "title") {
+            titlePropName = name;
+            break;
+          }
         }
       }
+    } catch {
+      // Database may not expose properties (template-style); use default
     }
 
     const properties: Record<string, any> = {
       [titlePropName]: { title: [{ text: { content: title } }] },
     };
 
-    if (props?.status && dbInfo.properties?.["Status"]) {
-      const statusProp = dbInfo.properties["Status"] as any;
-      if (statusProp.type === "select") {
-        properties["Status"] = { select: { name: props.status } };
-      } else if (statusProp.type === "status") {
+    // Try to set Status, Priority, Due Date — silently skip if property doesn't exist
+    if (props?.status) {
+      if (dbInfo?.properties?.["Status"]) {
+        const statusProp = dbInfo.properties["Status"] as any;
+        if (statusProp.type === "select") {
+          properties["Status"] = { select: { name: props.status } };
+        } else if (statusProp.type === "status") {
+          properties["Status"] = { status: { name: props.status } };
+        }
+      } else {
+        // Try status type as default for template databases
         properties["Status"] = { status: { name: props.status } };
       }
     }
 
-    if (props?.priority && (dbInfo.properties?.["Priority"] as any)?.type === "select") {
+    if (props?.priority) {
       properties["Priority"] = { select: { name: props.priority } };
     }
 
-    if (props?.dueDate && dbInfo.properties) {
-      const datePropName = ["Due date", "Due Date", "Due", "Deadline", "Date"].find(
-        (n) => (dbInfo.properties[n] as any)?.type === "date",
-      );
-      if (datePropName) {
-        properties[datePropName] = { date: { start: props.dueDate } };
-      }
+    if (props?.dueDate) {
+      // Try common date property names
+      const datePropName = dbInfo?.properties
+        ? (["Due date", "Due Date", "Due", "Deadline", "Date"].find(
+            (n) => (dbInfo.properties[n] as any)?.type === "date",
+          ) ?? "Due date")
+        : "Due date";
+      properties[datePropName] = { date: { start: props.dueDate } };
     }
 
     const page = await client.pages.create({
@@ -257,6 +267,208 @@ export async function createNotionTask(
   } catch (err) {
     logger.error({ err, title }, "Failed to create Notion task");
     return null;
+  }
+}
+
+export async function updateNotionTaskStatus(
+  notionPageId: string,
+  status: string,
+): Promise<boolean> {
+  const client = getClient();
+  try {
+    // Map internal status to Notion status names
+    const statusMap: Record<string, string> = {
+      done: "Done",
+      cancelled: "Done",
+      in_progress: "In progress",
+      pending: "Not started",
+    };
+    const notionStatus = statusMap[status] ?? status;
+
+    await client.pages.update({
+      page_id: notionPageId,
+      properties: {
+        Status: { status: { name: notionStatus } },
+      },
+    });
+    return true;
+  } catch (err) {
+    logger.error({ err, notionPageId, status }, "Failed to update Notion task status");
+    return false;
+  }
+}
+
+export async function archiveNotionPage(notionPageId: string): Promise<boolean> {
+  const client = getClient();
+  try {
+    await client.pages.update({
+      page_id: notionPageId,
+      archived: true,
+    });
+    return true;
+  } catch (err) {
+    logger.error({ err, notionPageId }, "Failed to archive Notion page");
+    return false;
+  }
+}
+
+export async function updateNotionTaskProperties(
+  notionPageId: string,
+  updates: { priority?: string; dueDate?: string; description?: string },
+): Promise<boolean> {
+  const client = getClient();
+  try {
+    const properties: Record<string, any> = {};
+
+    if (updates.priority) {
+      properties["Priority"] = { select: { name: updates.priority } };
+    }
+    if (updates.dueDate) {
+      properties["Due date"] = { date: { start: updates.dueDate } };
+    }
+
+    if (Object.keys(properties).length) {
+      await client.pages.update({ page_id: notionPageId, properties });
+    }
+
+    // Update page body (description) if provided
+    if (updates.description) {
+      await client.pages.updateMarkdown({
+        page_id: notionPageId,
+        markdown: updates.description,
+      } as any).catch(() => {
+        // Fallback: add as a paragraph block
+        return (client as any).blocks?.children?.append?.({
+          block_id: notionPageId,
+          children: [{ paragraph: { rich_text: [{ text: { content: updates.description! } }] } }],
+        });
+      });
+    }
+
+    return true;
+  } catch (err) {
+    logger.error({ err, notionPageId }, "Failed to update Notion task properties");
+    return false;
+  }
+}
+
+export async function addNotionComment(
+  notionPageId: string,
+  comment: string,
+): Promise<boolean> {
+  const client = getClient();
+  try {
+    await (client as any).comments.create({
+      parent: { page_id: notionPageId },
+      rich_text: [{ text: { content: comment } }],
+    });
+    return true;
+  } catch (err) {
+    logger.error({ err, notionPageId }, "Failed to add Notion comment");
+    return false;
+  }
+}
+
+export async function createNotionProject(
+  name: string,
+  props?: { status?: string; owner?: string },
+): Promise<string | null> {
+  if (!config.NOTION_PROJECTS_DATABASE_ID) return null;
+
+  const client = getClient();
+  try {
+    const properties: Record<string, any> = {
+      Name: { title: [{ text: { content: name } }] },
+    };
+    if (props?.status) {
+      properties["Status"] = { select: { name: props.status } };
+    }
+
+    const page = await client.pages.create({
+      parent: { database_id: config.NOTION_PROJECTS_DATABASE_ID },
+      properties,
+    }) as any;
+
+    return page.url ?? null;
+  } catch (err) {
+    logger.error({ err, name }, "Failed to create Notion project");
+    return null;
+  }
+}
+
+export async function getNotionTasksViaSearch(): Promise<NotionTask[]> {
+  if (!config.NOTION_TASKS_DATABASE_ID) return [];
+
+  const client = getClient();
+  const now = new Date();
+
+  try {
+    const search = await client.search({
+      filter: { property: "object", value: "page" },
+      page_size: 100,
+    });
+
+    const dbPages = search.results.filter(
+      (p: any) => p.parent?.database_id === config.NOTION_TASKS_DATABASE_ID && !p.archived,
+    );
+
+    return dbPages.map((page: any) => {
+      const props = page.properties ?? {};
+      const dueDate = extractDate(props, "Due date", "Due Date", "Due", "Deadline", "Date");
+      return {
+        id: page.id,
+        title: extractTitle(props) || (props["Task name"]?.title?.[0]?.plain_text ?? "Untitled"),
+        status: extractSelect(props, "Status", "State") || (props["Status"]?.status?.name ?? ""),
+        priority: extractSelect(props, "Priority", "Priorita") || "",
+        assignee: extractPerson(props, "Assignee", "Assign", "Person", "Owner"),
+        dueDate,
+        url: page.url ?? "",
+        isOverdue: dueDate ? new Date(dueDate) < now : false,
+      };
+    });
+  } catch (err) {
+    logger.error({ err }, "Failed to fetch Notion tasks via search");
+    return [];
+  }
+}
+
+export async function updateNotionDashboardPage(metrics: Record<string, any>): Promise<void> {
+  const client = getClient();
+
+  // Search for existing dashboard page
+  try {
+    const search = await client.search({
+      query: "COO Dashboard",
+      filter: { property: "object", value: "page" },
+    });
+
+    let pageId: string | null = null;
+
+    if (search.results.length) {
+      pageId = search.results[0].id;
+    }
+
+    const content = `# COO Dashboard — ${new Date().toLocaleDateString("it-IT")}
+
+## Metriche
+- Task attivi: ${metrics.activeTasks ?? 0}
+- Task completati oggi: ${metrics.completedToday ?? 0}
+- Task overdue: ${metrics.overdue ?? 0}
+- Team members: ${metrics.teamSize ?? 0}
+
+## Team Workload
+${metrics.workload?.map((w: any) => `- ${w.name}: ${w.score}`).join("\n") ?? "N/A"}
+
+## Ultime decisioni
+${metrics.recentDecisions ?? "Nessuna decisione recente."}
+
+_Aggiornato automaticamente dal COO Assistant_`;
+
+    if (pageId) {
+      await client.pages.updateMarkdown({ page_id: pageId, markdown: content } as any).catch(() => {});
+    }
+  } catch (err) {
+    logger.error({ err }, "Failed to update Notion dashboard");
   }
 }
 

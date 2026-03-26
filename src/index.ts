@@ -20,6 +20,12 @@ import { checkMeetingActionItems } from "./services/meeting-actions.js";
 import { sendWeeklyClientUpdates } from "./services/client-updates.js";
 import { syncTasksToNotion, syncNotionToTasks } from "./services/notion-two-way-sync.js";
 import { exportWeeklyMetrics } from "./services/sheets-dashboard.js";
+import { analyzeSentimentBatch, checkSentimentAlerts } from "./services/sentiment-analyzer.js";
+import { updateCommunicationStats, detectSilentEmployees } from "./services/communication-patterns.js";
+import { checkCommitmentFulfillment } from "./services/commitment-tracker.js";
+import { extractKnowledgeBatch } from "./services/knowledge-base.js";
+import { extractDailyTopics } from "./services/topic-analyzer.js";
+import { detectMeetingOverload } from "./services/meeting-intelligence.js";
 import { startUserbot, stopUserbot } from "./bot/monitors.js";
 import { startSlackMonitor, stopSlackMonitor } from "./bot/slack-monitor.js";
 import { logger } from "./utils/logger.js";
@@ -55,8 +61,15 @@ async function main(): Promise<void> {
     weeklyDigest: () => generateWeeklyDigest(bot),
     meetingActions: () => checkMeetingActionItems(bot),
     clientUpdates: () => sendWeeklyClientUpdates(bot),
-    notionTwoWaySync: async () => { await syncTasksToNotion(bot); await syncNotionToTasks(bot); },
+    notionTwoWaySync: async () => { await syncTasksToNotion(bot).catch((e) => logger.error({ err: e }, "syncTasksToNotion failed")); await syncNotionToTasks(bot).catch((e) => logger.error({ err: e }, "syncNotionToTasks failed")); },
     sheetsExport: () => exportWeeklyMetrics(bot),
+    intelligenceBatch: async () => { await analyzeSentimentBatch(bot); await extractKnowledgeBatch(); },
+    communicationStatsJob: () => updateCommunicationStats(),
+    sentimentAlerts: () => checkSentimentAlerts(bot),
+    commitmentCheck: () => checkCommitmentFulfillment(bot),
+    silentEmployeeCheck: () => detectSilentEmployees(bot),
+    meetingOverload: () => detectMeetingOverload(bot),
+    topicExtraction: async () => { await extractDailyTopics(); },
   });
 
   // Start Telethon/GramJS userbot for chat monitoring

@@ -227,15 +227,66 @@ These run automatically — check Telegram for notifications:
 
 ---
 
+## 21. Auto-Project Creation
+
+**Send:** `crea un progetto per il redesign del sito web, deadline 15 aprile`
+
+**Expected:** AI generates 5-10 tasks with estimates, priorities, and dependencies automatically.
+
+---
+
+## 22. Project ETA
+
+**Send:** `qual è la data stimata di completamento del progetto redesign?`
+
+**Expected:** Velocity calculation, remaining tasks, estimated completion date.
+
+---
+
+## 23. Intelligence — Commitments
+
+**Send:** `chi ha promesso cosa e non l'ha fatto?`
+
+**Expected:** List of unfulfilled commitments detected from conversations.
+
+---
+
+## 24. Intelligence — Decisions
+
+**Send:** `quali decisioni abbiamo preso questa settimana?`
+
+**Expected:** Decision log extracted from Slack/Telegram conversations.
+
+---
+
+## 25. Intelligence — Knowledge Base
+
+**Send:** `cosa sappiamo del cliente Acme?`
+
+**Expected:** Accumulated knowledge about the client from conversations.
+
+---
+
+## 26. Google Workspace Calendar
+
+**Send:** `schedula il task review nel calendario di Marco, durata 2 ore`
+
+**Expected:** Event created in Marco's Google Workspace calendar (not yours).
+
+---
+
 ## Summary
 
 After completing this demo you've tested:
 - 18+ bot commands
-- 14+ AI tools via natural language
-- Task lifecycle (create → assign → dependency → schedule → complete)
-- Team management and workload analysis
+- 28 AI tools via natural language
+- Task lifecycle (create → assign → dependency → schedule → chunk → complete)
+- Auto-project creation with AI task breakdown
+- Team management, workload, and capacity analysis
 - Multi-channel communication (Telegram, Email, Slack)
 - Report generation (text + PDF)
+- Company intelligence (sentiment, commitments, decisions, knowledge)
+- Google Workspace calendar scheduling per employee
 - All major integrations (Google, Slack, Notion)
 
 For daily usage reference, see **[USAGE.md](USAGE.md)**.

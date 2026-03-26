@@ -13,6 +13,15 @@ import { generateDailyReportPdf, generateEmployeeReportPdf, generateWeeklyReport
 import { sendSlackMessage } from "../bot/slack-monitor.js";
 import { getTeamWorkload } from "../services/workload-tracker.js";
 import { getTeamCapacity, suggestAssignment } from "../services/capacity-planner.js";
+import { rescheduleTask } from "../services/auto-scheduler.js";
+import { getProjectETA } from "../services/project-eta.js";
+import { addNotionComment, createNotionProject, updateNotionTaskProperties } from "../services/notion-sync.js";
+import { getCommitments } from "../services/commitment-tracker.js";
+import { getTeamSentiment } from "../services/sentiment-analyzer.js";
+import { getCommunicationOverview } from "../services/communication-patterns.js";
+import { queryKnowledge } from "../services/knowledge-base.js";
+import { getTopics, getClientMentions } from "../services/topic-analyzer.js";
+import { getMeetingStats } from "../services/meeting-intelligence.js";
 import type { Tool, ToolResultBlockParam } from "@anthropic-ai/sdk/resources/messages.js";
 
 export interface AgentResponse {
@@ -86,6 +95,21 @@ AZIONI CHE PUOI ESEGUIRE (usa i tools quando l'utente lo chiede):
 - Schedulare un task nel calendario Google (schedule_task)
 - Vedere la capacita del team nei prossimi 5 giorni (get_team_capacity)
 - Suggerire a chi assegnare un task (suggest_assignment)
+- Vedere promesse/commitment del team e se sono stati mantenuti (get_commitments)
+- Analizzare il morale e sentiment del team (get_team_sentiment)
+- Vedere pattern di comunicazione, tempi di risposta, employee silenziosi (get_communication_patterns)
+- Consultare la knowledge base aziendale (query_knowledge_base)
+- Vedere trending topics e clienti piu' discussi (get_topics)
+- Statistiche meeting e overload (get_meeting_intelligence)
+- Aggiungere commenti/note ai task su Notion (add_notion_comment)
+- Creare progetti su Notion (create_notion_project)
+
+SYNC NOTION BIDIREZIONALE:
+- Task creati qui appaiono su Notion entro 1 minuto
+- Task completati/cancellati qui aggiornano lo status su Notion
+- Task creati su Notion vengono importati qui automaticamente
+- Cambi di priorita/deadline si sincronizzano in entrambe le direzioni
+- Puoi aggiungere note ai task che saranno visibili su Notion
 
 Quando l'utente chiede "manda un reminder a X" o "crea un task per Y", USA IL TOOL. Non simulare l'azione.
 Per i reminder: se l'utente dice "manda un reminder a Damiano", cerca l'email dell'employee e invia sia su Slack che via email.
@@ -104,6 +128,65 @@ interface ClassificationResult {
   needs_reply: boolean;
   summary: string;
   reason: string;
+}
+
+/**
+ * Parse a date string respecting the configured timezone.
+ * Accepts: "2026-03-26", "2026-03-26T16:00", "2026-03-26T16:00:00"
+ * If no time is provided, defaults to 23:59 local time (end of day).
+ */
+function parseLocalDate(dateStr: string): Date {
+  const tz = config.TIMEZONE || "Europe/Rome";
+
+  if (dateStr.includes("T")) {
+    // Has time component — parse as local datetime
+    const date = new Date(dateStr);
+    if (!isNaN(date.getTime())) {
+      // Interpret as local time in the configured timezone
+      const localStr = date.toLocaleString("en-US", { timeZone: tz });
+      const utcStr = date.toLocaleString("en-US", { timeZone: "UTC" });
+      const diff = new Date(utcStr).getTime() - new Date(localStr).getTime();
+      // dateStr is intended as local time, so we need to add the offset
+      const parts = dateStr.split("T");
+      const [year, month, day] = parts[0].split("-").map(Number);
+      const timeParts = parts[1].split(":").map(Number);
+      const hour = timeParts[0] ?? 0;
+      const minute = timeParts[1] ?? 0;
+      // Create date in UTC then adjust for timezone
+      const localDate = new Date(Date.UTC(year, month - 1, day, hour, minute));
+      // Get the offset for this specific date in the target timezone
+      const formatter = new Intl.DateTimeFormat("en-US", {
+        timeZone: tz,
+        timeZoneName: "shortOffset",
+      });
+      const formatted = formatter.format(localDate);
+      const offsetMatch = formatted.match(/GMT([+-]\d+(?::\d+)?)/);
+      let offsetMs = 0;
+      if (offsetMatch) {
+        const [h, m] = (offsetMatch[1] + ":0").split(":").map(Number);
+        offsetMs = (h * 60 + (h < 0 ? -m : m)) * 60 * 1000;
+      }
+      return new Date(localDate.getTime() - offsetMs);
+    }
+  }
+
+  // Date only — set to end of day in local timezone
+  const [year, month, day] = dateStr.split("-").map(Number);
+  if (!year || !month || !day) return new Date(dateStr);
+
+  const endOfDay = new Date(Date.UTC(year, month - 1, day, 23, 59, 0));
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    timeZoneName: "shortOffset",
+  });
+  const formatted = formatter.format(endOfDay);
+  const offsetMatch = formatted.match(/GMT([+-]\d+(?::\d+)?)/);
+  let offsetMs = 0;
+  if (offsetMatch) {
+    const [h, m] = (offsetMatch[1] + ":0").split(":").map(Number);
+    offsetMs = (h * 60 + (h < 0 ? -m : m)) * 60 * 1000;
+  }
+  return new Date(endOfDay.getTime() - offsetMs);
 }
 
 class COOAgent {
@@ -203,7 +286,7 @@ ${JSON.stringify(data, null, 2)}`;
           description: { type: "string", description: "Task description" },
           priority: { type: "string", enum: ["low", "medium", "high", "urgent"], description: "Task priority" },
           assigned_to_name: { type: "string", description: "Employee name to assign the task to (optional)" },
-          due_date: { type: "string", description: "Due date in YYYY-MM-DD format (optional)" },
+          due_date: { type: "string", description: "Due date in YYYY-MM-DD or YYYY-MM-DDTHH:mm format (e.g. 2026-03-26T16:00). Always include time if the user specifies it." },
         },
         required: ["title"],
       },
@@ -335,7 +418,7 @@ ${JSON.stringify(data, null, 2)}`;
           new_title: { type: "string", description: "New title (optional)" },
           new_description: { type: "string", description: "New description (optional)" },
           new_priority: { type: "string", enum: ["low", "medium", "high", "urgent"], description: "New priority (optional)" },
-          new_due_date: { type: "string", description: "New due date YYYY-MM-DD (optional)" },
+          new_due_date: { type: "string", description: "New due date YYYY-MM-DD or YYYY-MM-DDTHH:mm (optional)" },
           new_assigned_to: { type: "string", description: "New assignee name (optional)" },
         },
         required: ["task_title", "action"],
@@ -434,6 +517,123 @@ ${JSON.stringify(data, null, 2)}`;
         required: [],
       },
     },
+    {
+      name: "get_commitments",
+      description: "Get commitments/promises made by team members in conversations. Shows who promised what and if they followed through.",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          employee_name: { type: "string", description: "Filter by employee name (optional)" },
+          status: { type: "string", enum: ["open", "fulfilled", "broken", "all"], description: "Filter by status (default: open)" },
+          days: { type: "number", description: "Look back N days (default 7)" },
+        },
+        required: [],
+      },
+    },
+    {
+      name: "get_team_sentiment",
+      description: "Get team morale and sentiment analysis. Shows mood scores, labels, and trends per employee.",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          employee_name: { type: "string", description: "Filter by employee (optional)" },
+          days: { type: "number", description: "Look back N days (default 7)" },
+        },
+        required: [],
+      },
+    },
+    {
+      name: "get_communication_patterns",
+      description: "Get communication patterns: message counts, response times, active hours, silent employees.",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          employee_name: { type: "string", description: "Filter by employee (optional)" },
+          days: { type: "number", description: "Look back N days (default 7)" },
+        },
+        required: [],
+      },
+    },
+    {
+      name: "query_knowledge_base",
+      description: "Search the company knowledge base. Accumulated facts about clients, processes, team, lessons learned from conversations.",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          query: { type: "string", description: "What to search for" },
+          category: { type: "string", enum: ["client", "process", "technical", "team", "lesson", "all"], description: "Knowledge category (optional)" },
+        },
+        required: ["query"],
+      },
+    },
+    {
+      name: "get_topics",
+      description: "Get trending topics, most-discussed clients, and conversation themes.",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          type: { type: "string", enum: ["topics", "clients", "all"], description: "What to analyze (default: all)" },
+          days: { type: "number", description: "Look back N days (default 7)" },
+        },
+        required: [],
+      },
+    },
+    {
+      name: "get_meeting_intelligence",
+      description: "Get meeting statistics: today's meetings, total hours, free time, overload detection.",
+      input_schema: {
+        type: "object" as const,
+        properties: {},
+        required: [],
+      },
+    },
+    {
+      name: "add_notion_comment",
+      description: "Add a comment/note to a task on Notion. Use when user says 'aggiungi nota al task X'.",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          task_title: { type: "string", description: "Title of the task to comment on" },
+          comment: { type: "string", description: "The comment/note text" },
+        },
+        required: ["task_title", "comment"],
+      },
+    },
+    {
+      name: "create_notion_project",
+      description: "Create a new project in the Notion Projects database.",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          name: { type: "string", description: "Project name" },
+          status: { type: "string", description: "Project status (optional)" },
+        },
+        required: ["name"],
+      },
+    },
+    {
+      name: "get_project_eta",
+      description: "Get estimated completion date for a project. Calculates velocity, remaining work, and confidence level.",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          project_name: { type: "string", description: "Project name or keyword to match related tasks" },
+        },
+        required: ["project_name"],
+      },
+    },
+    {
+      name: "create_project_from_description",
+      description: "Auto-create a project with multiple tasks from a description. AI generates tasks, estimates, and assignments. Use when user says 'crea progetto X' with details.",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          description: { type: "string", description: "Project description with goals and requirements" },
+          deadline: { type: "string", description: "Overall project deadline YYYY-MM-DD (optional)" },
+        },
+        required: ["description"],
+      },
+    },
   ];
 
   // --- Execute a tool call ---
@@ -452,7 +652,7 @@ ${JSON.stringify(data, null, 2)}`;
           description: input.description ?? null,
           priority: input.priority ?? "medium",
           assignedTo,
-          dueDate: input.due_date ? new Date(input.due_date) : null,
+          dueDate: input.due_date ? parseLocalDate(input.due_date) : null,
           source: "ai",
           status: "pending",
         });
@@ -684,7 +884,7 @@ ${JSON.stringify(data, null, 2)}`;
         if (input.new_title) updates.title = input.new_title;
         if (input.new_description) updates.description = input.new_description;
         if (input.new_priority) updates.priority = input.new_priority;
-        if (input.new_due_date) updates.dueDate = new Date(input.new_due_date);
+        if (input.new_due_date) updates.dueDate = parseLocalDate(input.new_due_date);
         if (input.new_assigned_to) {
           const [emp] = await db.select().from(employees)
             .where(sql`${employees.name} ILIKE ${"%" + input.new_assigned_to + "%"}`).limit(1);
@@ -692,7 +892,11 @@ ${JSON.stringify(data, null, 2)}`;
           else return `Employee "${input.new_assigned_to}" non trovato. Task non modificato.`;
         }
         await db.update(tasks).set(updates).where(eq(tasks.id, task.id));
-        return `Task "${task.title}" aggiornato con successo.`;
+        // Trigger reschedule if priority or deadline changed and task was scheduled
+        if ((input.new_priority || input.new_due_date) && task.autoScheduled) {
+          await rescheduleTask(task.id).catch(() => {});
+        }
+        return `Task "${task.title}" aggiornato con successo.${task.autoScheduled && (input.new_priority || input.new_due_date) ? " Il task verra' rischedulato nel calendario." : ""}`;
       }
 
       if (name === "get_calendar_events") {
@@ -732,7 +936,7 @@ ${JSON.stringify(data, null, 2)}`;
           isRecurring: true,
           recurrencePattern: input.pattern,
           recurrenceDays: input.days ?? null,
-          recurrenceEndDate: input.end_date ? new Date(input.end_date) : null,
+          recurrenceEndDate: input.end_date ? parseLocalDate(input.end_date) : null,
           source: "ai",
           status: "pending",
         });
@@ -793,6 +997,96 @@ ${JSON.stringify(data, null, 2)}`;
       if (name === "suggest_assignment") {
         const minutes = input.estimated_minutes ?? 60;
         return suggestAssignment(minutes);
+      }
+
+      if (name === "get_commitments") {
+        return getCommitments(input.status ?? "open", input.employee_name, input.days ?? 7);
+      }
+
+      if (name === "get_team_sentiment") {
+        return getTeamSentiment(input.employee_name, input.days ?? 7);
+      }
+
+      if (name === "get_communication_patterns") {
+        return getCommunicationOverview(input.employee_name, input.days ?? 7);
+      }
+
+      if (name === "query_knowledge_base") {
+        return queryKnowledge(input.query, input.category);
+      }
+
+      if (name === "get_topics") {
+        const type = input.type ?? "all";
+        if (type === "clients") return getClientMentions(input.days ?? 7);
+        return getTopics(input.period ?? "today");
+      }
+
+      if (name === "get_meeting_intelligence") {
+        return getMeetingStats();
+      }
+
+      if (name === "add_notion_comment") {
+        const [task] = await db.select().from(tasks)
+          .where(sql`${tasks.title} ILIKE ${"%" + input.task_title + "%"}`).limit(1);
+        if (!task) return `Task "${input.task_title}" non trovato.`;
+        if (!task.externalId?.startsWith("notion:")) return `Task "${task.title}" non ha un link Notion. Verra' sincronizzato al prossimo ciclo.`;
+        const notionPageId = task.externalId.replace("notion:", "").replace("notion-done:", "");
+        const ok = await addNotionComment(notionPageId, input.comment);
+        return ok ? `Commento aggiunto al task "${task.title}" su Notion.` : `Errore nell'aggiungere il commento su Notion.`;
+      }
+
+      if (name === "create_notion_project") {
+        const url = await createNotionProject(input.name, { status: input.status });
+        return url ? `Progetto "${input.name}" creato su Notion: ${url}` : `Errore nella creazione del progetto. Verifica che NOTION_PROJECTS_DATABASE_ID sia configurato.`;
+      }
+
+      if (name === "get_project_eta") {
+        return getProjectETA(input.project_name);
+      }
+
+      if (name === "create_project_from_description") {
+        // AI generates task breakdown, then creates each task
+        const breakdown = await this.think(
+          `Genera un piano progetto basato su questa descrizione. Per ogni task specifica: titolo, priorita (low/medium/high/urgent), durata stimata in minuti, e dipendenze (se un task dipende da un altro).
+Rispondi SOLO con JSON valido: [{"title": "...", "priority": "medium", "estimated_minutes": 120, "depends_on": null}]
+Genera 5-10 task concreti e actionable.`,
+          { description: input.description, deadline: input.deadline },
+        );
+
+        const start = breakdown.indexOf("[");
+        const end = breakdown.lastIndexOf("]") + 1;
+        if (start < 0 || end <= start) return "Non sono riuscito a generare il piano progetto. Riprova con una descrizione più dettagliata.";
+
+        const planTasks: Array<{ title: string; priority: string; estimated_minutes: number; depends_on: string | null }> = JSON.parse(breakdown.slice(start, end));
+
+        const created: string[] = [];
+        const taskMap = new Map<string, string>(); // title -> id
+
+        for (const pt of planTasks) {
+          const [result] = await db.insert(tasks).values({
+            title: pt.title,
+            priority: pt.priority ?? "medium",
+            estimatedMinutes: pt.estimated_minutes ?? 60,
+            dueDate: input.deadline ? parseLocalDate(input.deadline) : null,
+            source: "ai",
+            status: "pending",
+          }).returning({ id: tasks.id });
+
+          taskMap.set(pt.title, result.id);
+          created.push(`- ${pt.title} (${pt.priority}, ~${pt.estimated_minutes}min)`);
+        }
+
+        // Set dependencies
+        for (const pt of planTasks) {
+          if (pt.depends_on && taskMap.has(pt.depends_on) && taskMap.has(pt.title)) {
+            const depId = taskMap.get(pt.depends_on)!;
+            await db.update(tasks)
+              .set({ blockedBy: JSON.stringify([depId]) })
+              .where(eq(tasks.id, taskMap.get(pt.title)!));
+          }
+        }
+
+        return `Progetto creato con ${created.length} task:\n${created.join("\n")}${input.deadline ? `\nDeadline: ${input.deadline}` : ""}`;
       }
 
       return `Tool "${name}" non riconosciuto.`;

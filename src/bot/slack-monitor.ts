@@ -5,6 +5,7 @@ import { agent } from "../core/agent.js";
 import { config } from "../config.js";
 import { db } from "../models/database.js";
 import { messageLogs, tasks } from "../models/schema.js";
+import { runInlineExtractors } from "../services/intelligence-pipeline.js";
 import { logger } from "../utils/logger.js";
 
 let slackApp: SlackApp | null = null;
@@ -155,7 +156,7 @@ async function handleSlackMessage(
   );
 
   // Store with source="slack"
-  await db.insert(messageLogs)
+  const [insertedMsg] = await db.insert(messageLogs)
     .values({
       source: "slack",
       chatTitle: `#${channelName}`,
@@ -164,7 +165,13 @@ async function handleSlackMessage(
       content: messageText.slice(0, 500),
       urgency: classification.urgency,
       needsReply: classification.needs_reply,
-    });
+    })
+    .returning({ id: messageLogs.id });
+
+  // Intelligence pipeline (regex only, fire-and-forget)
+  if (insertedMsg) {
+    runInlineExtractors(insertedMsg.id, messageText, senderName, `#${channelName}`).catch(() => {});
+  }
 
   // Notify owner via Telegram for ALL Slack messages
   {

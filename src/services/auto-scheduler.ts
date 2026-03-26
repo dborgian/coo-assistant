@@ -5,11 +5,14 @@ import { config } from "../config.js";
 import { getGoogleAuth, isGoogleConfigured } from "../core/google-auth.js";
 import { db } from "../models/database.js";
 import { employees, tasks } from "../models/schema.js";
+import { withRetry } from "../utils/resilience.js";
 import { logger } from "../utils/logger.js";
 
 const PRIORITY_RANK: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
 const WORK_START_HOUR = 9;
 const WORK_END_HOUR = 18;
+const MAX_CHUNK_MINUTES = 90;
+const CHUNK_BREAK_MINUTES = 15;
 
 interface TimeSlot {
   start: Date;
@@ -40,14 +43,14 @@ async function checkDependenciesResolved(blockedBy: string): Promise<boolean> {
   }
 }
 
-async function getCalendarBusySlots(startDate: Date, endDate: Date): Promise<TimeSlot[]> {
+async function getCalendarBusySlots(startDate: Date, endDate: Date, calendarId: string = "primary"): Promise<TimeSlot[]> {
   const auth = getGoogleAuth();
   if (!auth) return [];
 
   const calendar = google.calendar({ version: "v3", auth });
   try {
     const res = await calendar.events.list({
-      calendarId: "primary",
+      calendarId,
       timeMin: startDate.toISOString(),
       timeMax: endDate.toISOString(),
       singleEvents: true,
@@ -134,6 +137,7 @@ async function createCalendarEvent(
   title: string,
   start: Date,
   end: Date,
+  calendarId: string = "primary",
 ): Promise<string | null> {
   const auth = getGoogleAuth();
   if (!auth) return null;
@@ -141,7 +145,7 @@ async function createCalendarEvent(
   const calendar = google.calendar({ version: "v3", auth });
   try {
     const res = await calendar.events.insert({
-      calendarId: "primary",
+      calendarId,
       requestBody: {
         summary: `[COO] ${title}`,
         start: { dateTime: start.toISOString() },
@@ -152,18 +156,18 @@ async function createCalendarEvent(
     });
     return res.data.id ?? null;
   } catch (err) {
-    logger.error({ err }, "Failed to create calendar event");
+    logger.error({ err, calendarId }, "Failed to create calendar event");
     return null;
   }
 }
 
-async function deleteCalendarEvent(eventId: string): Promise<void> {
+async function deleteCalendarEvent(eventId: string, calendarId: string = "primary"): Promise<void> {
   const auth = getGoogleAuth();
   if (!auth) return;
 
   const calendar = google.calendar({ version: "v3", auth });
   try {
-    await calendar.events.delete({ calendarId: "primary", eventId });
+    await calendar.events.delete({ calendarId, eventId });
   } catch (err) {
     logger.debug({ err, eventId }, "Failed to delete calendar event (may already be deleted)");
   }
@@ -202,8 +206,8 @@ export async function autoScheduleTasks(bot: Bot): Promise<void> {
   const schedulingHorizon = new Date(now);
   schedulingHorizon.setDate(schedulingHorizon.getDate() + 14);
 
-  // Fetch calendar busy slots for the horizon
-  const busySlots = await getCalendarBusySlots(now, schedulingHorizon);
+  // Fetch calendar busy slots for the horizon (primary calendar for unassigned tasks)
+  const busySlots = await getCalendarBusySlots(now, schedulingHorizon, "primary");
   const scheduledEvents: TimeSlot[] = [...busySlots]; // Track newly scheduled slots too
 
   let scheduled = 0;
@@ -216,10 +220,74 @@ export async function autoScheduleTasks(bot: Bot): Promise<void> {
       if (!resolved) continue;
     }
 
-    const duration = task.estimatedMinutes ?? 60;
+    const totalDuration = task.estimatedMinutes ?? 60;
     const deadline = new Date(task.dueDate!);
 
-    const freeSlots = findFreeSlots(scheduledEvents, now, deadline, duration);
+    // Resolve calendar: use assignee's Google email if available (Google Workspace)
+    let calendarId = "primary";
+    if (task.assignedTo) {
+      const [emp] = await db
+        .select({ googleEmail: employees.googleEmail, email: employees.email })
+        .from(employees)
+        .where(eq(employees.id, task.assignedTo))
+        .limit(1);
+      if (emp?.googleEmail) calendarId = emp.googleEmail;
+      else if (emp?.email?.includes("@") && !emp.email.includes("test")) calendarId = emp.email;
+    }
+
+    // Fetch busy slots for this employee's calendar
+    const empBusySlots = calendarId !== "primary"
+      ? await getCalendarBusySlots(now, schedulingHorizon, calendarId)
+      : scheduledEvents;
+    const empScheduled: TimeSlot[] = calendarId !== "primary" ? [...empBusySlots] : scheduledEvents;
+
+    // Task chunking: break large tasks into 90-min blocks
+    if (totalDuration > MAX_CHUNK_MINUTES * 1.5) {
+      const chunks = Math.ceil(totalDuration / MAX_CHUNK_MINUTES);
+      let chunksScheduled = 0;
+      let firstSlotStart: Date | null = null;
+      let lastSlotEnd: Date | null = null;
+      const eventIds: string[] = [];
+
+      for (let c = 0; c < chunks; c++) {
+        const chunkDuration = Math.min(MAX_CHUNK_MINUTES, totalDuration - c * MAX_CHUNK_MINUTES);
+        const chunkSlots = findFreeSlots(empScheduled, now, deadline, chunkDuration);
+        if (!chunkSlots.length) break;
+
+        const slot = chunkSlots[0];
+        const eventId = await withRetry(
+          () => createCalendarEvent(`${task.title} (${c + 1}/${chunks})`, slot.start, slot.end, calendarId),
+          "calendar-create",
+        ).catch(() => null);
+
+        empScheduled.push(slot);
+        // Add break after chunk
+        empScheduled.push({ start: slot.end, end: new Date(slot.end.getTime() + CHUNK_BREAK_MINUTES * 60000) });
+
+        if (!firstSlotStart) firstSlotStart = slot.start;
+        lastSlotEnd = slot.end;
+        if (eventId) eventIds.push(eventId);
+        chunksScheduled++;
+      }
+
+      if (chunksScheduled > 0) {
+        await db.update(tasks).set({
+          scheduledStart: firstSlotStart,
+          scheduledEnd: lastSlotEnd,
+          autoScheduled: true,
+          calendarEventId: eventIds[0] ?? null,
+          updatedAt: new Date(),
+        }).where(eq(tasks.id, task.id));
+        scheduled++;
+        logger.info({ task: task.title, chunks: chunksScheduled }, "Task chunked and scheduled");
+      } else {
+        atRisk.push(`"${task.title}" (scade ${deadline.toLocaleDateString("it-IT")})`);
+      }
+      continue;
+    }
+
+    // Normal scheduling (single block)
+    const freeSlots = findFreeSlots(empScheduled, now, deadline, totalDuration);
 
     if (!freeSlots.length) {
       atRisk.push(`"${task.title}" (scade ${deadline.toLocaleDateString("it-IT")})`);
@@ -227,7 +295,12 @@ export async function autoScheduleTasks(bot: Bot): Promise<void> {
     }
 
     const slot = freeSlots[0];
-    const eventId = await createCalendarEvent(task.title, slot.start, slot.end);
+    const eventId = await withRetry(
+      () => createCalendarEvent(task.title, slot.start, slot.end, calendarId),
+      "calendar-create",
+    ).catch(() => null);
+
+    empScheduled.push(slot);
 
     await db
       .update(tasks)
@@ -257,6 +330,15 @@ export async function autoScheduleTasks(bot: Bot): Promise<void> {
       logger.error({ err }, "Failed to send auto-scheduling notification");
     }
   }
+}
+
+/**
+ * Reschedule a task: delete old calendar event, mark as unscheduled.
+ * The next autoScheduleTasks cycle will re-place it.
+ */
+export async function rescheduleTask(taskId: string): Promise<void> {
+  await unscheduleTask(taskId);
+  logger.info({ taskId }, "Task marked for rescheduling");
 }
 
 export async function unscheduleTask(taskId: string): Promise<void> {

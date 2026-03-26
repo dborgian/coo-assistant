@@ -24,6 +24,13 @@ interface ScheduledJobs {
   clientUpdates?: cron.ScheduledTask;
   notionTwoWaySync?: cron.ScheduledTask;
   sheetsExport?: cron.ScheduledTask;
+  intelligenceBatch?: cron.ScheduledTask;
+  communicationStatsJob?: cron.ScheduledTask;
+  sentimentAlerts?: cron.ScheduledTask;
+  commitmentCheck?: cron.ScheduledTask;
+  silentEmployeeCheck?: cron.ScheduledTask;
+  meetingOverload?: cron.ScheduledTask;
+  topicExtraction?: cron.ScheduledTask;
 }
 
 const jobs: ScheduledJobs = {};
@@ -48,6 +55,13 @@ export function setupSchedules(callbacks: {
   clientUpdates: JobCallback;
   notionTwoWaySync: JobCallback;
   sheetsExport: JobCallback;
+  intelligenceBatch: JobCallback;
+  communicationStatsJob: JobCallback;
+  sentimentAlerts: JobCallback;
+  commitmentCheck: JobCallback;
+  silentEmployeeCheck: JobCallback;
+  meetingOverload: JobCallback;
+  topicExtraction: JobCallback;
 }): void {
   // Daily operations report
   const { DAILY_REPORT_HOUR: h, DAILY_REPORT_MINUTE: m, TIMEZONE: tz } = config;
@@ -169,8 +183,8 @@ export function setupSchedules(callbacks: {
     );
   }, { timezone: tz });
 
-  // Notion two-way sync (every 30 minutes)
-  jobs.notionTwoWaySync = cron.schedule("*/30 * * * *", () => {
+  // Notion two-way sync (every 5 minutes)
+  jobs.notionTwoWaySync = cron.schedule("*/5 * * * *", () => {
     callbacks.notionTwoWaySync().catch((err) =>
       logger.error({ err }, "Notion two-way sync failed"),
     );
@@ -180,6 +194,55 @@ export function setupSchedules(callbacks: {
   jobs.sheetsExport = cron.schedule("0 8 * * 1", () => {
     callbacks.sheetsExport().catch((err) =>
       logger.error({ err }, "Sheets export failed"),
+    );
+  }, { timezone: tz });
+
+  // Intelligence batch (every 4 hours — sentiment, knowledge, topics)
+  jobs.intelligenceBatch = cron.schedule("0 */4 * * *", () => {
+    callbacks.intelligenceBatch().catch((err) =>
+      logger.error({ err }, "Intelligence batch failed"),
+    );
+  });
+
+  // Communication stats (daily at 23:45)
+  jobs.communicationStatsJob = cron.schedule("45 23 * * *", () => {
+    callbacks.communicationStatsJob().catch((err) =>
+      logger.error({ err }, "Communication stats failed"),
+    );
+  }, { timezone: tz });
+
+  // Sentiment alerts (daily at 18:00)
+  jobs.sentimentAlerts = cron.schedule("0 18 * * *", () => {
+    callbacks.sentimentAlerts().catch((err) =>
+      logger.error({ err }, "Sentiment alerts failed"),
+    );
+  }, { timezone: tz });
+
+  // Commitment fulfillment check (daily at 10:00)
+  jobs.commitmentCheck = cron.schedule("0 10 * * *", () => {
+    callbacks.commitmentCheck().catch((err) =>
+      logger.error({ err }, "Commitment check failed"),
+    );
+  }, { timezone: tz });
+
+  // Silent employee detection (daily at 10:30)
+  jobs.silentEmployeeCheck = cron.schedule("30 10 * * *", () => {
+    callbacks.silentEmployeeCheck().catch((err) =>
+      logger.error({ err }, "Silent employee check failed"),
+    );
+  }, { timezone: tz });
+
+  // Meeting overload detection (daily at 08:00)
+  jobs.meetingOverload = cron.schedule("0 8 * * *", () => {
+    callbacks.meetingOverload().catch((err) =>
+      logger.error({ err }, "Meeting overload check failed"),
+    );
+  }, { timezone: tz });
+
+  // Topic extraction (daily at 23:00)
+  jobs.topicExtraction = cron.schedule("0 23 * * *", () => {
+    callbacks.topicExtraction().catch((err) =>
+      logger.error({ err }, "Topic extraction failed"),
     );
   }, { timezone: tz });
 

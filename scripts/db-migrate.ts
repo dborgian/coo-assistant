@@ -178,6 +178,75 @@ async function migrate() {
   }
   console.log("✓ column upgrades applied");
 
+  // ── message_logs new columns ──
+  await client.unsafe("ALTER TABLE message_logs ADD COLUMN IF NOT EXISTS analyzed BOOLEAN DEFAULT FALSE");
+  await client.unsafe("ALTER TABLE message_logs ADD COLUMN IF NOT EXISTS sentiment REAL");
+  console.log("✓ message_logs upgrades");
+
+  // ── employee_metrics new columns ──
+  await client.unsafe("ALTER TABLE employee_metrics ADD COLUMN IF NOT EXISTS sentiment_score REAL");
+  await client.unsafe("ALTER TABLE employee_metrics ADD COLUMN IF NOT EXISTS avg_response_minutes REAL");
+  await client.unsafe("ALTER TABLE employee_metrics ADD COLUMN IF NOT EXISTS communication_score REAL");
+  console.log("✓ employee_metrics upgrades");
+
+  // ── Table: intelligence_events ──
+  await client`
+    CREATE TABLE IF NOT EXISTS intelligence_events (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      type TEXT NOT NULL,
+      employee_id UUID REFERENCES employees(id),
+      message_log_id UUID REFERENCES message_logs(id),
+      channel TEXT,
+      content TEXT NOT NULL,
+      context TEXT,
+      status TEXT DEFAULT 'open',
+      detected_at TIMESTAMPTZ DEFAULT NOW(),
+      due_date TIMESTAMPTZ,
+      fulfilled_at TIMESTAMPTZ,
+      linked_task_id UUID REFERENCES tasks(id),
+      metadata JSONB DEFAULT '{}',
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await client`CREATE INDEX IF NOT EXISTS idx_intel_events_type ON intelligence_events(type, status)`;
+  await client`CREATE INDEX IF NOT EXISTS idx_intel_events_employee ON intelligence_events(employee_id, type)`;
+  await client`CREATE INDEX IF NOT EXISTS idx_intel_events_detected ON intelligence_events(detected_at)`;
+  console.log("✓ intelligence_events");
+
+  // ── Table: sentiment_scores ──
+  await client`
+    CREATE TABLE IF NOT EXISTS sentiment_scores (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      employee_id UUID NOT NULL REFERENCES employees(id),
+      date DATE NOT NULL,
+      score REAL NOT NULL,
+      label TEXT,
+      message_count INTEGER DEFAULT 0,
+      highlights JSONB DEFAULT '[]',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(employee_id, date)
+    )`;
+  await client`CREATE INDEX IF NOT EXISTS idx_sentiment_emp_date ON sentiment_scores(employee_id, date)`;
+  console.log("✓ sentiment_scores");
+
+  // ── Table: communication_stats ──
+  await client`
+    CREATE TABLE IF NOT EXISTS communication_stats (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      date DATE NOT NULL,
+      employee_id UUID NOT NULL REFERENCES employees(id),
+      source TEXT NOT NULL,
+      messages_sent INTEGER DEFAULT 0,
+      channels_active JSONB DEFAULT '[]',
+      contacts JSONB DEFAULT '{}',
+      avg_response_time_minutes REAL,
+      first_message_at TIMESTAMPTZ,
+      last_message_at TIMESTAMPTZ,
+      active_hours JSONB DEFAULT '{}',
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await client`CREATE INDEX IF NOT EXISTS idx_comm_stats_emp_date ON communication_stats(employee_id, date)`;
+  console.log("✓ communication_stats");
+
   console.log("\n✅ All migrations completed successfully!");
   console.log(`   Database: ${dbUrl.replace(/:[^:@]+@/, ':***@')}`);
 }

@@ -1,4 +1,4 @@
-import { pgTable, text, boolean, uuid, timestamp, date, bigint, integer, real, index } from "drizzle-orm/pg-core";
+import { pgTable, text, boolean, uuid, timestamp, date, bigint, integer, real, jsonb, index } from "drizzle-orm/pg-core";
 
 export const employees = pgTable("employees", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -94,6 +94,8 @@ export const messageLogs = pgTable("message_logs", {
   needsReply: boolean("needs_reply").default(false),
   replied: boolean("replied").default(false),
   notifiedOwner: boolean("notified_owner").default(false),
+  analyzed: boolean("analyzed").default(false),
+  sentiment: real("sentiment"),
   receivedAt: timestamp("received_at", { withTimezone: true }).defaultNow(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
 }, (t) => [
@@ -113,9 +115,63 @@ export const employeeMetrics = pgTable("employee_metrics", {
   slackMessages: integer("slack_messages").default(0),
   emailsSent: integer("emails_sent").default(0),
   workloadScore: real("workload_score"),
+  sentimentScore: real("sentiment_score"),
+  avgResponseMinutes: real("avg_response_minutes"),
+  communicationScore: real("communication_score"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
 }, (t) => [
   index("idx_emp_metrics_date").on(t.employeeId, t.date),
+]);
+
+export const intelligenceEvents = pgTable("intelligence_events", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  type: text("type").notNull(), // commitment, decision, knowledge
+  employeeId: uuid("employee_id").references(() => employees.id),
+  messageLogId: uuid("message_log_id").references(() => messageLogs.id),
+  channel: text("channel"),
+  content: text("content").notNull(),
+  context: text("context"),
+  status: text("status").default("open"), // commitment: open/fulfilled/broken; decision: active/superseded; knowledge: active
+  detectedAt: timestamp("detected_at", { withTimezone: true }).defaultNow(),
+  dueDate: timestamp("due_date", { withTimezone: true }),
+  fulfilledAt: timestamp("fulfilled_at", { withTimezone: true }),
+  linkedTaskId: uuid("linked_task_id").references(() => tasks.id),
+  metadata: jsonb("metadata").default({}),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index("idx_intel_events_type").on(t.type, t.status),
+  index("idx_intel_events_employee").on(t.employeeId, t.type),
+  index("idx_intel_events_detected").on(t.detectedAt),
+]);
+
+export const sentimentScores = pgTable("sentiment_scores", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  employeeId: uuid("employee_id").references(() => employees.id).notNull(),
+  date: date("date").notNull(),
+  score: real("score").notNull(), // -1.0 to 1.0
+  label: text("label"), // frustrated, stressed, neutral, enthusiastic, disengaged
+  messageCount: integer("message_count").default(0),
+  highlights: jsonb("highlights").default([]),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index("idx_sentiment_emp_date").on(t.employeeId, t.date),
+]);
+
+export const communicationStats = pgTable("communication_stats", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  date: date("date").notNull(),
+  employeeId: uuid("employee_id").references(() => employees.id).notNull(),
+  source: text("source").notNull(), // slack, telegram
+  messagesSent: integer("messages_sent").default(0),
+  channelsActive: jsonb("channels_active").default([]),
+  contacts: jsonb("contacts").default({}), // {employeeId: count}
+  avgResponseTimeMinutes: real("avg_response_time_minutes"),
+  firstMessageAt: timestamp("first_message_at", { withTimezone: true }),
+  lastMessageAt: timestamp("last_message_at", { withTimezone: true }),
+  activeHours: jsonb("active_hours").default({}), // {hour: count}
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index("idx_comm_stats_emp_date").on(t.employeeId, t.date),
 ]);
 
 export const dailyReports = pgTable("daily_reports", {

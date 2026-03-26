@@ -50,7 +50,9 @@ export async function getTeamCapacity(): Promise<CapacitySummary[]> {
   const horizon = new Date(now);
   horizon.setDate(horizon.getDate() + FORECAST_DAYS);
 
-  const totalAvailableHours = WORK_HOURS_PER_DAY * FORECAST_DAYS;
+  // Subtract meeting hours from total available
+  const meetingHours = await getCalendarBusyHours(now, horizon);
+  const totalAvailableHours = Math.max(1, WORK_HOURS_PER_DAY * FORECAST_DAYS - meetingHours);
 
   const activeEmployees = await db
     .select()

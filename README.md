@@ -5,9 +5,9 @@ AI-powered Chief Operating Officer for startup operations. Orchestrates Google W
 ## What It Does
 
 - **Talk naturally** — Send any message to the Telegram bot and the AI COO answers with full operational context
-- **20 AI tools** — Create tasks, send emails, manage team, generate reports, schedule work — all via chat
-- **19 automated jobs** — Escalation, auto-scheduling, daily agendas, risk detection, weekly digests
-- **9 integrations** — Google Calendar (R/W), Gmail, Drive, Sheets, Slack, Telegram, Notion, Supabase, Claude AI
+- **28 AI tools** — Create tasks/projects, send emails, manage team, generate reports, schedule work, company intelligence — all via chat
+- **24+ automated jobs** — Escalation, auto-scheduling, daily agendas, risk detection, sentiment analysis, knowledge extraction, weekly digests
+- **9 integrations** — Google Calendar (R/W per employee), Gmail, Drive, Sheets, Slack, Telegram, Notion, Supabase, Claude AI
 
 ## Architecture
 

@@ -1,9 +1,9 @@
 import type { Bot } from "grammy";
-import { and, eq, isNull, sql, inArray } from "drizzle-orm";
+import { and, eq, isNull, isNotNull, sql, inArray, not } from "drizzle-orm";
 import { config } from "../config.js";
 import { db } from "../models/database.js";
 import { tasks, employees } from "../models/schema.js";
-import { createNotionTask, isNotionConfigured, getNotionWorkspaceSummary } from "./notion-sync.js";
+import { createNotionTask, isNotionConfigured, getNotionTasksViaSearch, updateNotionTaskStatus, updateNotionTaskProperties, archiveNotionPage } from "./notion-sync.js";
 import { logger } from "../utils/logger.js";
 
 export async function syncTasksToNotion(bot: Bot): Promise<void> {
@@ -24,8 +24,6 @@ export async function syncTasksToNotion(bot: Bot): Promise<void> {
       ),
     );
 
-  if (!unsyncedTasks.length) return;
-
   let synced = 0;
 
   for (const task of unsyncedTasks) {
@@ -41,7 +39,6 @@ export async function syncTasksToNotion(bot: Bot): Promise<void> {
       });
 
       if (url) {
-        // Extract page ID from URL
         const pageId = url.split("/").pop()?.split("-").pop() ?? null;
         await db
           .update(tasks)
@@ -60,30 +57,124 @@ export async function syncTasksToNotion(bot: Bot): Promise<void> {
   if (synced) {
     logger.info({ count: synced }, "Tasks synced to Notion");
   }
+
+  // Sync status changes (done/cancelled) to Notion
+  const completedWithNotion = await db
+    .select()
+    .from(tasks)
+    .where(
+      and(
+        inArray(tasks.status, ["done", "cancelled"]),
+        isNotNull(tasks.externalId),
+        sql`${tasks.externalId} LIKE 'notion:%' AND ${tasks.externalId} NOT LIKE 'notion-done:%'`,
+      ),
+    );
+
+  // Also sync property changes (priority, due date) for active tasks
+  const activeWithNotion = await db
+    .select()
+    .from(tasks)
+    .where(
+      and(
+        inArray(tasks.status, ["pending", "in_progress"]),
+        isNotNull(tasks.externalId),
+        sql`${tasks.externalId} LIKE 'notion:%'`,
+        // Only sync recently updated tasks (last 2 minutes to avoid spam)
+        sql`${tasks.updatedAt} > NOW() - INTERVAL '2 minutes'`,
+      ),
+    );
+
+  for (const task of activeWithNotion) {
+    const notionPageId = task.externalId!.replace("notion:", "");
+    if (!notionPageId || notionPageId.length < 10) continue;
+
+    try {
+      const updates: { priority?: string; dueDate?: string } = {};
+      if (task.priority) updates.priority = task.priority.charAt(0).toUpperCase() + task.priority.slice(1);
+      if (task.dueDate) updates.dueDate = new Date(task.dueDate).toISOString().split("T")[0];
+      await updateNotionTaskProperties(notionPageId, updates);
+    } catch (err) {
+      logger.debug({ err, task: task.title }, "Failed to sync task properties to Notion");
+    }
+  }
+
+  if (completedWithNotion.length) {
+    logger.info({ count: completedWithNotion.length }, "Syncing completed tasks to Notion");
+  }
+
+  for (const task of completedWithNotion) {
+    const notionPageId = task.externalId!.replace("notion:", "");
+    if (!notionPageId || notionPageId.length < 10) continue;
+
+    try {
+      // Update status on Notion
+      await updateNotionTaskStatus(notionPageId, task.status!);
+
+      // If task was deleted (cancelled), archive the Notion page
+      if (task.status === "cancelled") {
+        await archiveNotionPage(notionPageId);
+      }
+
+      // Clear externalId so we don't sync again
+      await db
+        .update(tasks)
+        .set({ externalId: `notion-done:${notionPageId}` })
+        .where(eq(tasks.id, task.id));
+
+      logger.debug({ task: task.title, status: task.status }, "Notion status synced");
+    } catch (err) {
+      logger.error({ err, task: task.title }, "Failed to sync status to Notion");
+    }
+  }
 }
 
 export async function syncNotionToTasks(bot: Bot): Promise<void> {
   if (!isNotionConfigured()) return;
 
   try {
-    const notionData = await getNotionWorkspaceSummary();
-    if (!notionData?.tasks.length) return;
+    const notionTasks = await getNotionTasksViaSearch();
+    if (!notionTasks.length) return;
 
     let imported = 0;
+    let statusUpdated = 0;
 
-    for (const nt of notionData.tasks) {
-      // Check if already in our DB
+    const statusMap: Record<string, string> = {
+      "Not started": "pending",
+      "In progress": "in_progress",
+      "In Progress": "in_progress",
+      Done: "done",
+      Cancelled: "cancelled",
+    };
+
+    const priorityMap: Record<string, string> = {
+      Low: "low",
+      Medium: "medium",
+      High: "high",
+      Urgent: "urgent",
+    };
+
+    for (const nt of notionTasks) {
+      // Check if already in our DB by notion ID
       const [existing] = await db
-        .select({ id: tasks.id })
+        .select({ id: tasks.id, status: tasks.status })
         .from(tasks)
-        .where(
-          sql`${tasks.externalId} LIKE ${"notion:%" + (nt as any).id + "%"}`,
-        )
+        .where(sql`${tasks.externalId} LIKE ${"notion:" + nt.id + "%"}`)
         .limit(1);
 
-      if (existing) continue;
+      if (existing) {
+        // Bidirectional status sync: if Notion status changed, update our DB
+        const notionStatus = statusMap[nt.status] ?? "pending";
+        if (existing.status !== notionStatus && notionStatus !== existing.status) {
+          await db
+            .update(tasks)
+            .set({ status: notionStatus, updatedAt: new Date() })
+            .where(eq(tasks.id, existing.id));
+          statusUpdated++;
+        }
+        continue;
+      }
 
-      // Also check by exact title to avoid duplicates
+      // Check by exact title to avoid duplicates
       const [byTitle] = await db
         .select({ id: tasks.id })
         .from(tasks)
@@ -98,27 +189,10 @@ export async function syncNotionToTasks(bot: Bot): Promise<void> {
         const [emp] = await db
           .select({ id: employees.id })
           .from(employees)
-          .where(
-            sql`${employees.name} ILIKE ${"%" + nt.assignee + "%"}`,
-          )
+          .where(sql`${employees.name} ILIKE ${"%" + nt.assignee + "%"}`)
           .limit(1);
         assignedTo = emp?.id ?? null;
       }
-
-      const statusMap: Record<string, string> = {
-        "Not started": "pending",
-        "In progress": "in_progress",
-        "In Progress": "in_progress",
-        Done: "done",
-        Cancelled: "cancelled",
-      };
-
-      const priorityMap: Record<string, string> = {
-        Low: "low",
-        Medium: "medium",
-        High: "high",
-        Urgent: "urgent",
-      };
 
       await db.insert(tasks).values({
         title: nt.title,
@@ -127,21 +201,19 @@ export async function syncNotionToTasks(bot: Bot): Promise<void> {
         assignedTo,
         dueDate: nt.dueDate ? new Date(nt.dueDate) : null,
         source: "notion",
-        externalId: `notion:${(nt as any).id ?? nt.title}`,
+        externalId: `notion:${nt.id}`,
       });
 
       imported++;
     }
 
-    if (imported) {
-      logger.info({ count: imported }, "Tasks imported from Notion");
-      try {
+    if (imported || statusUpdated) {
+      logger.info({ imported, statusUpdated }, "Notion to DB sync completed");
+      if (imported) {
         await bot.api.sendMessage(
           config.TELEGRAM_OWNER_CHAT_ID,
-          `\uD83D\uDD04 Notion sync: ${imported} nuovi task importati.`,
-        );
-      } catch (err) {
-        logger.error({ err }, "Failed to notify about Notion imports");
+          `\uD83D\uDD04 Notion sync: ${imported} nuovi task importati${statusUpdated ? `, ${statusUpdated} status aggiornati` : ""}.`,
+        ).catch(() => {});
       }
     }
   } catch (err) {
