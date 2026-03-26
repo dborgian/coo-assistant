@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>COO Assistant — Panoramica Funzionalit&agrave;</title>
+<style>
+  :root {
+    --primary: #1a1a2e;
+    --accent: #16213e;
+    --blue: #4285f4;
+    --green: #0f9b58;
+    --purple: #7b1fa2;
+    --red: #db4437;
+    --yellow: #f4b400;
+    --light: #f8f9fa;
+    --border: #e0e0e0;
+    --text: #333;
+    --muted: #666;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; color: var(--text); background: var(--light); line-height: 1.6; }
+
+  /* Hero */
+  .hero {
+    background: linear-gradient(135deg, var(--primary) 0%, var(--accent) 50%, var(--purple) 100%);
+    color: white; padding: 60px 40px; text-align: center;
+  }
+  .hero h1 { font-size: 2.8em; font-weight: 700; margin-bottom: 12px; letter-spacing: -0.5px; }
+  .hero .subtitle { font-size: 1.2em; opacity: 0.85; max-width: 700px; margin: 0 auto 30px; }
+  .hero .badge {
+    display: inline-block; background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.3);
+    padding: 6px 16px; border-radius: 20px; font-size: 0.85em; margin: 4px;
+  }
+
+  /* Container */
+  .container { max-width: 1100px; margin: 0 auto; padding: 0 24px; }
+
+  /* Stats bar */
+  .stats-bar {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 16px; margin: -40px auto 40px; position: relative; z-index: 2;
+  }
+  .stat-card {
+    background: white; border-radius: 12px; padding: 24px 20px; text-align: center;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+  }
+  .stat-card .number { font-size: 2.2em; font-weight: 700; }
+  .stat-card .label { font-size: 0.82em; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; }
+  .stat-card:nth-child(1) .number { color: var(--blue); }
+  .stat-card:nth-child(2) .number { color: var(--green); }
+  .stat-card:nth-child(3) .number { color: var(--purple); }
+  .stat-card:nth-child(4) .number { color: var(--yellow); }
+
+  /* Sections */
+  section { margin: 48px 0; }
+  section h2 {
+    font-size: 1.6em; margin-bottom: 8px; color: var(--primary);
+    display: flex; align-items: center; gap: 10px;
+  }
+  section h2 .icon { font-size: 0.9em; }
+  section .section-desc { color: var(--muted); margin-bottom: 24px; font-size: 0.95em; }
+
+  /* Cards grid */
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
+  .card {
+    background: white; border-radius: 10px; padding: 24px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.05); border-left: 4px solid var(--blue);
+    transition: transform 0.15s, box-shadow 0.15s;
+  }
+  .card:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,0.1); }
+  .card h3 { font-size: 1.05em; margin-bottom: 8px; color: var(--primary); }
+  .card p { font-size: 0.9em; color: var(--muted); }
+  .card .tag {
+    display: inline-block; font-size: 0.72em; padding: 2px 8px; border-radius: 10px;
+    background: #e8f0fe; color: var(--blue); font-weight: 600; margin-top: 10px;
+  }
+  .card.green { border-left-color: var(--green); }
+  .card.green .tag { background: #e6f4ea; color: var(--green); }
+  .card.purple { border-left-color: var(--purple); }
+  .card.purple .tag { background: #f3e5f5; color: var(--purple); }
+  .card.red { border-left-color: var(--red); }
+  .card.red .tag { background: #fce8e6; color: var(--red); }
+  .card.yellow { border-left-color: var(--yellow); }
+  .card.yellow .tag { background: #fef7e0; color: #b8860b; }
+
+  /* NL section */
+  .nl-demo {
+    background: white; border-radius: 12px; padding: 32px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.06); margin-top: 24px;
+  }
+  .nl-demo h3 { margin-bottom: 16px; color: var(--primary); }
+  .chat-row { display: flex; gap: 12px; margin-bottom: 14px; align-items: flex-start; }
+  .chat-row .avatar {
+    width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center;
+    justify-content: center; font-size: 0.8em; font-weight: 700; flex-shrink: 0; color: white;
+  }
+  .chat-row.user .avatar { background: var(--blue); }
+  .chat-row.bot .avatar { background: var(--purple); }
+  .chat-row .bubble {
+    background: #f1f3f4; border-radius: 12px; padding: 10px 16px;
+    font-size: 0.9em; max-width: 80%; line-height: 1.5;
+  }
+  .chat-row.bot .bubble { background: #ede7f6; }
+
+  /* Architecture */
+  .arch-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+  .arch-item {
+    background: white; border-radius: 8px; padding: 16px; text-align: center;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+  }
+  .arch-item .tech-icon { font-size: 1.8em; margin-bottom: 6px; }
+  .arch-item .tech-name { font-weight: 600; font-size: 0.92em; }
+  .arch-item .tech-role { font-size: 0.78em; color: var(--muted); margin-top: 2px; }
+
+  /* Tool table */
+  .tool-table { width: 100%; border-collapse: collapse; background: white; border-radius: 10px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
+  .tool-table th { background: var(--primary); color: white; padding: 14px 16px; text-align: left; font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.5px; }
+  .tool-table td { padding: 12px 16px; border-bottom: 1px solid var(--border); font-size: 0.9em; }
+  .tool-table tr:last-child td { border-bottom: none; }
+  .tool-table tr:hover td { background: #f8f9ff; }
+  .tool-table .tool-name { font-family: 'Courier New', monospace; font-weight: 600; color: var(--purple); font-size: 0.85em; }
+  .new-badge { background: var(--green); color: white; font-size: 0.65em; padding: 2px 6px; border-radius: 8px; font-weight: 700; vertical-align: middle; margin-left: 6px; }
+
+  /* Integrations */
+  .int-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
+  .int-card {
+    background: white; border-radius: 10px; padding: 20px; display: flex; gap: 14px; align-items: center;
+    box-shadow: 0 1px 6px rgba(0,0,0,0.05);
+  }
+  .int-card .int-icon { font-size: 2em; flex-shrink: 0; }
+  .int-card .int-name { font-weight: 600; font-size: 0.95em; }
+  .int-card .int-desc { font-size: 0.8em; color: var(--muted); }
+
+  /* Flow */
+  .flow {
+    display: flex; align-items: center; justify-content: center; gap: 0;
+    flex-wrap: wrap; margin: 24px 0; padding: 24px;
+    background: white; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+  }
+  .flow-step {
+    background: var(--blue); color: white; padding: 12px 20px; border-radius: 8px;
+    font-size: 0.85em; font-weight: 600; text-align: center; min-width: 120px;
+  }
+  .flow-step.ai { background: var(--purple); }
+  .flow-step.action { background: var(--green); }
+  .flow-arrow { font-size: 1.4em; color: var(--muted); margin: 0 8px; }
+
+  /* Footer */
+  footer {
+    margin-top: 60px; padding: 30px 0; text-align: center;
+    color: var(--muted); font-size: 0.85em; border-top: 1px solid var(--border);
+  }
+
+  @media (max-width: 600px) {
+    .hero { padding: 40px 20px; }
+    .hero h1 { font-size: 1.8em; }
+    .cards { grid-template-columns: 1fr; }
+    .flow { flex-direction: column; }
+    .flow-arrow { transform: rotate(90deg); margin: 6px 0; }
+  }
+</style>
+</head>
+<body>
+
+<!-- HERO -->
+<div class="hero">
+  <h1>COO Assistant</h1>
+  <p class="subtitle">
+    Assistente AI per le operations di startup. Monitora tutti i canali di comunicazione,
+    gestisce task e team, genera report automatici, e risponde in linguaggio naturale via Telegram.
+  </p>
+  <span class="badge">Telegram Bot</span>
+  <span class="badge">Claude AI</span>
+  <span class="badge">12 Tool AI</span>
+  <span class="badge">7 Integrazioni</span>
+  <span class="badge">Real-time</span>
+</div>
+
+<!-- STATS -->
+<div class="container">
+  <div class="stats-bar">
+    <div class="stat-card">
+      <div class="number">12</div>
+      <div class="label">AI Tool Actions</div>
+    </div>
+    <div class="stat-card">
+      <div class="number">18+</div>
+      <div class="label">Comandi Bot</div>
+    </div>
+    <div class="stat-card">
+      <div class="number">7</div>
+      <div class="label">Integrazioni</div>
+    </div>
+    <div class="stat-card">
+      <div class="number">6</div>
+      <div class="label">Job Automatici</div>
+    </div>
+  </div>
+
+  <!-- COME FUNZIONA -->
+  <section>
+    <h2><span class="icon">&#9881;</span> Come Funziona</h2>
+    <p class="section-desc">Il flusso di una richiesta in linguaggio naturale dal Telegram al risultato.</p>
+    <div class="flow">
+      <div class="flow-step">Messaggio Telegram</div>
+      <span class="flow-arrow">&#10132;</span>
+      <div class="flow-step ai">Claude AI + Contesto Live</div>
+      <span class="flow-arrow">&#10132;</span>
+      <div class="flow-step ai">Selezione Tool</div>
+      <span class="flow-arrow">&#10132;</span>
+      <div class="flow-step action">Esecuzione Azione</div>
+      <span class="flow-arrow">&#10132;</span>
+      <div class="flow-step">Risposta + File</div>
+    </div>
+    <p style="text-align:center; color:var(--muted); font-size:0.88em; margin-top:12px;">
+      Ogni messaggio riceve automaticamente il contesto live: task attivi, calendario, email, Slack, Notion, Drive.
+      <br>L'AI decide autonomamente quali azioni eseguire e conferma il risultato.
+    </p>
+  </section>
+
+  <!-- LINGUAGGIO NATURALE -->
+  <section>
+    <h2><span class="icon">&#128172;</span> Controllo via Linguaggio Naturale</h2>
+    <p class="section-desc">
+      L'assistente comprende richieste in italiano e inglese e le traduce in azioni concrete.
+      Non servono comandi da ricordare: basta parlare.
+    </p>
+    <div class="nl-demo">
+      <h3>Esempi di Conversazione</h3>
+
+      <div class="chat-row user">
+        <div class="avatar">U</div>
+        <div class="bubble">Genera il report PDF di oggi e caricalo su Drive</div>
+      </div>
+      <div class="chat-row bot">
+        <div class="avatar">AI</div>
+        <div class="bubble">Report PDF giornaliero generato. Salvato su Drive: <em>[link]</em><br><em>&#128196; [file daily-report-2026-03-25.pdf allegato]</em></div>
+      </div>
+
+      <div class="chat-row user">
+        <div class="avatar">U</div>
+        <div class="bubble">Aggiungi Sara come UX Designer nel team</div>
+      </div>
+      <div class="chat-row bot">
+        <div class="avatar">AI</div>
+        <div class="bubble">Employee "Sara" aggiunto con successo. Ruolo: UX Designer.</div>
+      </div>
+
+      <div class="chat-row user">
+        <div class="avatar">U</div>
+        <div class="bubble">Crea un task per Marco: review del codice frontend, priorita alta, scadenza venerdi. Mandagli anche un reminder via email.</div>
+      </div>
+      <div class="chat-row bot">
+        <div class="avatar">AI</div>
+        <div class="bubble">Ho eseguito 3 azioni:<br>1. Task "Review codice frontend" creato e assegnato a Marco (priority: high, due: 2026-03-28)<br>2. Notifica inviata su Slack #general<br>3. Email reminder inviata a marco@company.com</div>
+      </div>
+
+      <div class="chat-row user">
+        <div class="avatar">U</div>
+        <div class="bubble">Riassumi le conversazioni Slack di oggi</div>
+      </div>
+      <div class="chat-row bot">
+        <div class="avatar">AI</div>
+        <div class="bubble">Nelle ultime 24h ci sono stati 47 messaggi su 4 canali. Su #dev si e discusso del deploy del nuovo modulo auth. Su #general il team ha confermato le date per il retreat. Su #marketing sono state condivise le metriche della campagna Q1...</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 12 TOOL AI -->
+  <section>
+    <h2><span class="icon">&#128295;</span> I 12 Tool dell'Agente AI</h2>
+    <p class="section-desc">Ogni tool viene selezionato automaticamente dall'AI in base alla richiesta. Fino a 5 azioni consecutive per messaggio.</p>
+    <table class="tool-table">
+      <thead>
+        <tr><th>Tool</th><th>Descrizione</th><th>Esempio d'uso</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="tool-name">create_task</span></td>
+          <td>Crea un task e assegnalo a un membro del team, con notifica Slack</td>
+          <td>"Crea un task per Luca: preparare la demo"</td>
+        </tr>
+        <tr>
+          <td><span class="tool-name">update_task_status</span></td>
+          <td>Aggiorna lo stato di un task (pending, in progress, done, cancelled)</td>
+          <td>"Segna il task della demo come completato"</td>
+        </tr>
+        <tr>
+          <td><span class="tool-name">edit_task</span> <span class="new-badge">NEW</span></td>
+          <td>Modifica titolo, priorita, scadenza, assegnatario, o elimina un task</td>
+          <td>"Cambia la scadenza del task X a lunedi"</td>
+        </tr>
+        <tr>
+          <td><span class="tool-name">generate_report_pdf</span> <span class="new-badge">NEW</span></td>
+          <td>Genera report PDF (giornaliero, settimanale, per employee) con grafici e KPI</td>
+          <td>"Fammi il report settimanale in PDF"</td>
+        </tr>
+        <tr>
+          <td><span class="tool-name">manage_team</span> <span class="new-badge">NEW</span></td>
+          <td>Aggiungi o elenca employee e client nel sistema</td>
+          <td>"Chi c'e nel team?" / "Aggiungi un nuovo client"</td>
+        </tr>
+        <tr>
+          <td><span class="tool-name">notion_action</span> <span class="new-badge">NEW</span></td>
+          <td>Crea task o cerca pagine nel workspace Notion</td>
+          <td>"Crea un task su Notion per il redesign"</td>
+        </tr>
+        <tr>
+          <td><span class="tool-name">search_drive</span> <span class="new-badge">NEW</span></td>
+          <td>Cerca o elenca file nella cartella COO su Google Drive</td>
+          <td>"Trova i report della settimana scorsa su Drive"</td>
+        </tr>
+        <tr>
+          <td><span class="tool-name">get_report_history</span> <span class="new-badge">NEW</span></td>
+          <td>Consulta lo storico dei report operativi passati</td>
+          <td>"Mostrami il report di ieri"</td>
+        </tr>
+        <tr>
+          <td><span class="tool-name">get_slack_summary</span> <span class="new-badge">NEW</span></td>
+          <td>Genera un riassunto AI delle conversazioni Slack per canale</td>
+          <td>"Riassumi le chat Slack delle ultime 12 ore"</td>
+        </tr>
+        <tr>
+          <td><span class="tool-name">get_calendar_events</span> <span class="new-badge">NEW</span></td>
+          <td>Mostra gli eventi del calendario di oggi</td>
+          <td>"Cosa c'e in agenda oggi?"</td>
+        </tr>
+        <tr>
+          <td><span class="tool-name">send_slack_notification</span></td>
+          <td>Invia un messaggio a un canale Slack</td>
+          <td>"Avvisa il team su Slack del nuovo deadline"</td>
+        </tr>
+        <tr>
+          <td><span class="tool-name">send_email</span></td>
+          <td>Invia email via Gmail a qualsiasi indirizzo</td>
+          <td>"Manda un reminder a Sara per il meeting"</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- INTEGRAZIONI -->
+  <section>
+    <h2><span class="icon">&#128279;</span> Integrazioni Attive</h2>
+    <p class="section-desc">Ogni integrazione viene monitorata in tempo reale e i dati sono disponibili in ogni conversazione.</p>
+    <div class="int-grid">
+      <div class="int-card">
+        <div class="int-icon">&#128172;</div>
+        <div>
+          <div class="int-name">Slack</div>
+          <div class="int-desc">Monitoraggio real-time Socket Mode. Tutti i messaggi classificati per urgenza e inoltrati su Telegram.</div>
+        </div>
+      </div>
+      <div class="int-card">
+        <div class="int-icon">&#9993;</div>
+        <div>
+          <div class="int-name">Gmail</div>
+          <div class="int-desc">Email importanti non lette. Classificazione urgenza. Invio email in uscita.</div>
+        </div>
+      </div>
+      <div class="int-card">
+        <div class="int-icon">&#128197;</div>
+        <div>
+          <div class="int-name">Google Calendar</div>
+          <div class="int-desc">Eventi di oggi. Alert 15 min prima. Rilevamento conflitti automatico.</div>
+        </div>
+      </div>
+      <div class="int-card">
+        <div class="int-icon">&#128196;</div>
+        <div>
+          <div class="int-name">Google Drive</div>
+          <div class="int-desc">Upload automatico PDF report. Ricerca file. Cartella COO dedicata.</div>
+        </div>
+      </div>
+      <div class="int-card">
+        <div class="int-icon">&#128221;</div>
+        <div>
+          <div class="int-name">Notion</div>
+          <div class="int-desc">Sync task e progetti. Creazione task. Ricerca workspace. Alert overdue.</div>
+        </div>
+      </div>
+      <div class="int-card">
+        <div class="int-icon">&#9992;</div>
+        <div>
+          <div class="int-name">Telegram</div>
+          <div class="int-desc">Bot comandi + Userbot (GramJS) per monitoraggio gruppi. Interfaccia principale.</div>
+        </div>
+      </div>
+      <div class="int-card">
+        <div class="int-icon">&#129302;</div>
+        <div>
+          <div class="int-name">Claude AI (Anthropic)</div>
+          <div class="int-desc">Motore AI per analisi, classificazione messaggi, generazione report e tool-use autonomo.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- COMANDI BOT -->
+  <section>
+    <h2><span class="icon">&#9000;</span> Comandi Telegram</h2>
+    <p class="section-desc">Oltre al linguaggio naturale, sono disponibili comandi rapidi per azioni dirette.</p>
+    <div class="cards">
+      <div class="card">
+        <h3>/report</h3>
+        <p>Genera un report operativo completo con narrativa AI: task, email, calendario, Slack, Notion.</p>
+        <span class="tag">REPORT</span>
+      </div>
+      <div class="card purple">
+        <h3>/report_pdf [weekly]</h3>
+        <p>Report PDF con grafici KPI, pie chart task, bar chart comunicazioni. Opzione settimanale.</p>
+        <span class="tag">PDF</span>
+      </div>
+      <div class="card purple">
+        <h3>/employee_report [nome]</h3>
+        <p>Report PDF individuale per un employee: task, messaggi, produttivita ultimi 7 giorni.</p>
+        <span class="tag">PDF</span>
+      </div>
+      <div class="card green">
+        <h3>/tasks [overdue]</h3>
+        <p>Lista task attivi con stato, priorita, scadenza, assegnatario. Filtro overdue.</p>
+        <span class="tag">TASK</span>
+      </div>
+      <div class="card green">
+        <h3>/remind [persona] [task]</h3>
+        <p>Crea un task, assegnalo e invia notifica email al membro del team.</p>
+        <span class="tag">TASK</span>
+      </div>
+      <div class="card">
+        <h3>/slack_summary</h3>
+        <p>Riassunto AI delle conversazioni Slack delle ultime 24h, organizzato per canale.</p>
+        <span class="tag">SLACK</span>
+      </div>
+      <div class="card yellow">
+        <h3>/notion</h3>
+        <p>Panoramica workspace Notion: task per stato, progetti attivi, task overdue.</p>
+        <span class="tag">NOTION</span>
+      </div>
+      <div class="card yellow">
+        <h3>/drive [search query]</h3>
+        <p>Esplora e cerca file nella cartella COO su Google Drive.</p>
+        <span class="tag">DRIVE</span>
+      </div>
+      <div class="card red">
+        <h3>/dashboard</h3>
+        <p>Dashboard interattiva con bottoni inline: Tasks, Slack, Email, Calendar, Notion, Drive, Report, History.</p>
+        <span class="tag">DASHBOARD</span>
+      </div>
+      <div class="card">
+        <h3>/status</h3>
+        <p>Panoramica rapida: task attivi, messaggi pendenti, dimensione team.</p>
+        <span class="tag">INFO</span>
+      </div>
+      <div class="card">
+        <h3>/reports [data]</h3>
+        <p>Storico report generati. Consulta report passati per data specifica.</p>
+        <span class="tag">REPORT</span>
+      </div>
+      <div class="card green">
+        <h3>/add_employee, /add_client</h3>
+        <p>Aggiungi membri del team o clienti al database con nome, email, ruolo/azienda.</p>
+        <span class="tag">TEAM</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- AUTOMAZIONI -->
+  <section>
+    <h2><span class="icon">&#9203;</span> Automazioni Programmate</h2>
+    <p class="section-desc">6 job automatici in background che girano senza intervento manuale.</p>
+    <div class="cards">
+      <div class="card">
+        <h3>Daily Report Automatico</h3>
+        <p>Report operativo completo generato e inviato ogni giorno all'orario configurato. Salvato nel database.</p>
+        <span class="tag">GIORNALIERO</span>
+      </div>
+      <div class="card green">
+        <h3>Chat Monitoring</h3>
+        <p>Controlla i gruppi Telegram per nuovi messaggi. Classifica urgenza con AI. Notifica se serve risposta.</p>
+        <span class="tag">OGNI N MIN</span>
+      </div>
+      <div class="card purple">
+        <h3>Calendar Check</h3>
+        <p>Alert 15 minuti prima di ogni evento. Rilevamento automatico conflitti tra meeting.</p>
+        <span class="tag">OGNI N MIN</span>
+      </div>
+      <div class="card red">
+        <h3>Email Check</h3>
+        <p>Monitora Gmail per email importanti. Classifica urgenza. Notifica immediata per high/critical.</p>
+        <span class="tag">OGNI N MIN</span>
+      </div>
+      <div class="card yellow">
+        <h3>Task Reminders</h3>
+        <p>Invia reminder Telegram per task in scadenza nelle prossime 24h o con reminder esplicito.</p>
+        <span class="tag">OGNI 10 MIN</span>
+      </div>
+      <div class="card">
+        <h3>Notion Sync</h3>
+        <p>Sincronizza task e progetti da Notion. Alert automatico per task overdue.</p>
+        <span class="tag">OGNI N MIN</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- STACK TECNICO -->
+  <section>
+    <h2><span class="icon">&#128736;</span> Stack Tecnico</h2>
+    <p class="section-desc">Architettura moderna, type-safe, con focus su affidabilita e performance.</p>
+    <div class="arch-grid">
+      <div class="arch-item">
+        <div class="tech-icon">&#9883;</div>
+        <div class="tech-name">Node.js + TypeScript</div>
+        <div class="tech-role">Runtime &amp; Language</div>
+      </div>
+      <div class="arch-item">
+        <div class="tech-icon">&#129302;</div>
+        <div class="tech-name">Claude AI (Anthropic)</div>
+        <div class="tech-role">AI Engine + Tool Use</div>
+      </div>
+      <div class="arch-item">
+        <div class="tech-icon">&#128230;</div>
+        <div class="tech-name">grammY</div>
+        <div class="tech-role">Telegram Bot Framework</div>
+      </div>
+      <div class="arch-item">
+        <div class="tech-icon">&#128268;</div>
+        <div class="tech-name">GramJS</div>
+        <div class="tech-role">Telegram Userbot</div>
+      </div>
+      <div class="arch-item">
+        <div class="tech-icon">&#128172;</div>
+        <div class="tech-name">Slack Bolt</div>
+        <div class="tech-role">Socket Mode Real-time</div>
+      </div>
+      <div class="arch-item">
+        <div class="tech-icon">&#128451;</div>
+        <div class="tech-name">PostgreSQL + Drizzle</div>
+        <div class="tech-role">Database + ORM</div>
+      </div>
+      <div class="arch-item">
+        <div class="tech-icon">&#128204;</div>
+        <div class="tech-name">Google APIs</div>
+        <div class="tech-role">Calendar, Gmail, Drive</div>
+      </div>
+      <div class="arch-item">
+        <div class="tech-icon">&#128221;</div>
+        <div class="tech-name">Notion API</div>
+        <div class="tech-role">Task &amp; Projects</div>
+      </div>
+      <div class="arch-item">
+        <div class="tech-icon">&#128196;</div>
+        <div class="tech-name">PDFKit</div>
+        <div class="tech-role">Report PDF Generator</div>
+      </div>
+      <div class="arch-item">
+        <div class="tech-icon">&#128337;</div>
+        <div class="tech-name">node-cron</div>
+        <div class="tech-role">Job Scheduler</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- SICUREZZA -->
+  <section>
+    <h2><span class="icon">&#128274;</span> Sicurezza</h2>
+    <div class="cards">
+      <div class="card red">
+        <h3>Accesso Limitato</h3>
+        <p>Solo l'owner (TELEGRAM_OWNER_CHAT_ID) puo interagire con il bot. Tutti gli altri utenti vengono ignorati.</p>
+      </div>
+      <div class="card">
+        <h3>Logging Completo</h3>
+        <p>Ogni azione dell'AI, ogni tool eseguito e ogni messaggio ricevuto viene loggato con Pino per audit e debug.</p>
+      </div>
+      <div class="card green">
+        <h3>OAuth2 Google</h3>
+        <p>Autenticazione sicura con scope minimi: calendar.readonly, gmail.readonly, gmail.send, drive.file.</p>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <p><strong>COO Assistant</strong> &mdash; Built with TypeScript, Claude AI, and modern cloud integrations</p>
+    <p style="margin-top:6px;">Ultimo aggiornamento: Marzo 2026</p>
+  </footer>
+</div>
+
+</body>
+</html>

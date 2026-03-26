@@ -22,6 +22,7 @@ import {
   tasksCommand,
 } from "./commands.js";
 import { registerCallbacks } from "./callbacks.js";
+import { authMiddleware, requireRole } from "./auth.js";
 import { logger } from "../utils/logger.js";
 
 export function createBot(): Bot {
@@ -48,30 +49,34 @@ export function createBot(): Bot {
     { command: "help", description: "Show all commands" },
   ]).catch((err) => logger.warn({ err }, "Failed to set bot commands menu"));
 
-  // Middleware: only allow owner
-  bot.use(async (ctx, next) => {
-    if (ctx.from?.id !== config.TELEGRAM_OWNER_CHAT_ID) return;
-    await next();
-  });
+  // Middleware: authenticate users via employees table + TELEGRAM_OWNER_CHAT_ID
+  bot.use(authMiddleware);
 
+  // Commands available to all authenticated users (owner, admin, viewer)
   bot.command("start", startCommand);
   bot.command("help", helpCommand);
   bot.command("dashboard", dashboardCommand);
   bot.command("status", statusCommand);
-  bot.command("report", reportCommand);
-  bot.command("report_pdf", reportPdfCommand);
-  bot.command("employee_report", employeeReportCommand);
-  bot.command("drive", driveCommand);
-  bot.command("reports", reportsCommand);
   bot.command("tasks", tasksCommand);
   bot.command("notion", notionCommand);
-  bot.command("slack_report", slackReportCommand);
-  bot.command("slack_summary", slackSummaryCommand);
-  bot.command("remind", remindCommand);
-  bot.command("add_employee", addEmployeeCommand);
-  bot.command("add_client", addClientCommand);
-  bot.command("monitor", monitorCommand);
-  bot.command("slack", slackCommand);
+  bot.command("drive", driveCommand);
+
+  // Commands for owner + admin only
+  const adminGuard = requireRole("owner", "admin");
+  bot.command("report", adminGuard, reportCommand);
+  bot.command("report_pdf", adminGuard, reportPdfCommand);
+  bot.command("employee_report", adminGuard, employeeReportCommand);
+  bot.command("reports", adminGuard, reportsCommand);
+  bot.command("slack_report", adminGuard, slackReportCommand);
+  bot.command("slack_summary", adminGuard, slackSummaryCommand);
+  bot.command("remind", adminGuard, remindCommand);
+
+  // Commands for owner only
+  const ownerGuard = requireRole("owner");
+  bot.command("add_employee", ownerGuard, addEmployeeCommand);
+  bot.command("add_client", ownerGuard, addClientCommand);
+  bot.command("monitor", ownerGuard, monitorCommand);
+  bot.command("slack", ownerGuard, slackCommand);
 
   // Register inline keyboard callback handlers
   registerCallbacks(bot);
@@ -87,7 +92,7 @@ export function createBot(): Bot {
     ctx.reply("Something went wrong. Please try again.").catch(() => {});
   });
 
-  logger.info({ ownerId: config.TELEGRAM_OWNER_CHAT_ID }, "Telegram bot configured");
+  logger.info({ ownerId: config.TELEGRAM_OWNER_CHAT_ID }, "Telegram bot configured (multi-user auth enabled)");
 
   return bot;
 }

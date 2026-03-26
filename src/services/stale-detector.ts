@@ -1,10 +1,11 @@
 import type { Bot } from "grammy";
-import { and, eq, inArray, lte, sql } from "drizzle-orm";
+import { and, eq, lte } from "drizzle-orm";
 import { agent } from "../core/agent.js";
 import { config } from "../config.js";
 import { db } from "../models/database.js";
 import { employees, tasks } from "../models/schema.js";
 import { logger } from "../utils/logger.js";
+import { sendEmployeeMessage } from "../utils/telegram.js";
 
 export async function detectStaleTasks(bot: Bot): Promise<void> {
   const threeDaysAgo = new Date();
@@ -66,6 +67,15 @@ export async function detectStaleTasks(bot: Bot): Promise<void> {
     }
   }
 
+  // Notify each assignee about their stale tasks
+  const assigneeIds = [...new Set(staleTasks.map((t) => t.assignedTo).filter(Boolean))];
+  for (const assigneeId of assigneeIds) {
+    const assigneeTasks = staleTasks.filter((t) => t.assignedTo === assigneeId);
+    const assigneeMsg = `Hai ${assigneeTasks.length} task fermi senza aggiornamenti:\n${assigneeTasks.map((t) => `- "${t.title}"`).join("\n")}`;
+    await sendEmployeeMessage(bot, assigneeId!, assigneeMsg);
+  }
+
+  // Full summary to owner
   try {
     await bot.api.sendMessage(config.TELEGRAM_OWNER_CHAT_ID, message);
     logger.info({ count: staleTasks.length }, "Stale tasks detected and notified");

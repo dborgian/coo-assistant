@@ -1,9 +1,9 @@
 import type { Bot } from "grammy";
 import { and, eq, inArray, lte, gte, isNotNull } from "drizzle-orm";
-import { config } from "../config.js";
 import { db } from "../models/database.js";
 import { employees, tasks } from "../models/schema.js";
 import { logger } from "../utils/logger.js";
+import { notifyAssigneeAndOwner } from "../utils/telegram.js";
 
 export async function checkAndSendReminders(bot: Bot): Promise<void> {
   const now = new Date();
@@ -69,9 +69,7 @@ export async function checkAndSendReminders(bot: Bot): Promise<void> {
       `Priority: ${task.priority}`;
 
     try {
-      await bot.api.sendMessage(config.TELEGRAM_OWNER_CHAT_ID, notification, {
-        parse_mode: "HTML",
-      });
+      await notifyAssigneeAndOwner(bot, task.assignedTo, notification, "HTML");
 
       await db.update(tasks)
         .set({ reminderSent: true })

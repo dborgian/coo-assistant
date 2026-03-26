@@ -976,13 +976,130 @@ ${JSON.stringify(data, null, 2)}`;
         const [task] = await db.select().from(tasks)
           .where(sql`${tasks.title} ILIKE ${"%" + input.task_title + "%"}`).limit(1);
         if (!task) return `Task "${input.task_title}" non trovato.`;
+        if (!task.dueDate) return `Task "${task.title}" non ha una scadenza. Imposta una scadenza prima di schedulare.`;
 
         const duration = input.duration_minutes ?? 60;
         await db.update(tasks)
           .set({ estimatedMinutes: duration, autoScheduled: false, updatedAt: new Date() })
           .where(eq(tasks.id, task.id));
 
-        return `Task "${task.title}" pronto per auto-scheduling (durata: ${duration} min). Verra' piazzato nel prossimo ciclo di scheduling o puoi attendere il prossimo check automatico.`;
+        // Schedule immediately — find free slot and create calendar event
+        try {
+          const { google } = await import("googleapis");
+          const { getGoogleAuth } = await import("../core/google-auth.js");
+          const auth = getGoogleAuth();
+          if (!auth) return `Task aggiornato ma Google Calendar non configurato.`;
+
+          // Resolve calendar ID from assignee
+          let calendarId = "primary";
+          if (task.assignedTo) {
+            const [emp] = await db.select({ googleEmail: employees.googleEmail, email: employees.email })
+              .from(employees).where(eq(employees.id, task.assignedTo)).limit(1);
+            if (emp?.googleEmail) calendarId = emp.googleEmail;
+          }
+
+          const calendar = google.calendar({ version: "v3", auth });
+          const now = new Date();
+          const deadline = new Date(task.dueDate);
+
+          // Find busy slots
+          const busyRes = await calendar.events.list({
+            calendarId,
+            timeMin: now.toISOString(),
+            timeMax: deadline.toISOString(),
+            singleEvents: true,
+            orderBy: "startTime",
+          });
+
+          const busy = (busyRes.data.items ?? [])
+            .filter((e: any) => e.start?.dateTime && e.end?.dateTime)
+            .map((e: any) => ({ start: new Date(e.start.dateTime), end: new Date(e.end.dateTime) }));
+
+          // Find first free slot during work hours (9-18)
+          let slotFound = false;
+          const cursor = new Date(Math.max(now.getTime(), new Date(now.toISOString().split("T")[0] + "T09:00:00").getTime()));
+
+          for (let day = 0; day < 14; day++) {
+            const dayStart = new Date(cursor);
+            dayStart.setDate(dayStart.getDate() + day);
+            dayStart.setHours(9, 0, 0, 0);
+            const dayEnd = new Date(dayStart);
+            dayEnd.setHours(18, 0, 0, 0);
+
+            if (dayStart.getDay() === 0 || dayStart.getDay() === 6) continue;
+            if (dayEnd > deadline) break;
+
+            const effectiveStart = day === 0 && now > dayStart ? now : dayStart;
+            let ptr = new Date(effectiveStart);
+            const mins = ptr.getMinutes();
+            if (mins % 15 !== 0) ptr.setMinutes(mins + (15 - (mins % 15)), 0, 0);
+
+            const dayBusy = busy.filter((s: any) => s.start < dayEnd && s.end > ptr);
+            dayBusy.sort((a: any, b: any) => a.start.getTime() - b.start.getTime());
+
+            const trySlot = (from: Date) => {
+              const gap = (dayEnd.getTime() - from.getTime()) / 60000;
+              if (gap >= duration) {
+                return { start: new Date(from), end: new Date(from.getTime() + duration * 60000) };
+              }
+              return null;
+            };
+
+            for (const b of dayBusy) {
+              if (ptr < b.start) {
+                const gap = (b.start.getTime() - ptr.getTime()) / 60000;
+                if (gap >= duration) {
+                  const slot = { start: new Date(ptr), end: new Date(ptr.getTime() + duration * 60000) };
+                  const ev = await calendar.events.insert({
+                    calendarId,
+                    requestBody: {
+                      summary: `[COO] ${task.title}`,
+                      start: { dateTime: slot.start.toISOString() },
+                      end: { dateTime: slot.end.toISOString() },
+                      colorId: "9",
+                      description: "Auto-scheduled by COO Assistant",
+                    },
+                  });
+                  await db.update(tasks).set({
+                    scheduledStart: slot.start, scheduledEnd: slot.end,
+                    autoScheduled: true, calendarEventId: ev.data.id, updatedAt: new Date(),
+                  }).where(eq(tasks.id, task.id));
+                  const time = slot.start.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" });
+                  const date = slot.start.toLocaleDateString("it-IT");
+                  return `Task "${task.title}" schedulato nel calendario${calendarId !== "primary" ? ` di ${calendarId}` : ""}: ${date} alle ${time} (${duration} min).`;
+                }
+              }
+              if (b.end > ptr) ptr = new Date(b.end);
+            }
+
+            // After last busy slot
+            const remaining = trySlot(ptr);
+            if (remaining) {
+              const ev = await calendar.events.insert({
+                calendarId,
+                requestBody: {
+                  summary: `[COO] ${task.title}`,
+                  start: { dateTime: remaining.start.toISOString() },
+                  end: { dateTime: remaining.end.toISOString() },
+                  colorId: "9",
+                  description: "Auto-scheduled by COO Assistant",
+                },
+              });
+              await db.update(tasks).set({
+                scheduledStart: remaining.start, scheduledEnd: remaining.end,
+                autoScheduled: true, calendarEventId: ev.data.id, updatedAt: new Date(),
+              }).where(eq(tasks.id, task.id));
+              const time = remaining.start.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" });
+              const date = remaining.start.toLocaleDateString("it-IT");
+              return `Task "${task.title}" schedulato nel calendario${calendarId !== "primary" ? ` di ${calendarId}` : ""}: ${date} alle ${time} (${duration} min).`;
+            }
+          }
+
+          return `Task "${task.title}" aggiornato (${duration} min) ma non c'e' uno slot libero prima della scadenza. Verra' riprovato al prossimo ciclo.`;
+        } catch (err: any) {
+          logger.error({ err }, "Immediate scheduling failed");
+          return `Task "${task.title}" aggiornato (${duration} min). Scheduling automatico fallito: ${err.message}. Verra' riprovato.`;
+        }
       }
 
       if (name === "get_team_capacity") {

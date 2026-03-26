@@ -5,6 +5,7 @@ import { db } from "../models/database.js";
 import { clients, dailyReports, employees, messageLogs, tasks } from "../models/schema.js";
 import { config } from "../config.js";
 import { logger } from "../utils/logger.js";
+import { getAuthUser } from "./auth.js";
 import { getTodayEvents } from "../services/calendar-sync.js";
 import { getUnreadImportantEmails } from "../services/email-manager.js";
 import { getNotionWorkspaceSummary, isNotionConfigured } from "../services/notion-sync.js";
@@ -197,19 +198,19 @@ export async function reportCommand(ctx: CommandContext<Context>): Promise<void>
 export async function tasksCommand(ctx: CommandContext<Context>): Promise<void> {
   const args = ctx.match?.toString().trim() ?? "";
   const now = new Date();
+  const user = getAuthUser(ctx);
 
   let allTasks;
-  if (args.includes("overdue")) {
-    allTasks = await db
-      .select()
-      .from(tasks)
-      .where(and(inArray(tasks.status, ["pending", "in_progress"]), lt(tasks.dueDate, now)));
-  } else {
-    allTasks = await db
-      .select()
-      .from(tasks)
-      .where(inArray(tasks.status, ["pending", "in_progress"]));
-  }
+  const baseConditions = args.includes("overdue")
+    ? and(inArray(tasks.status, ["pending", "in_progress"]), lt(tasks.dueDate, now))
+    : inArray(tasks.status, ["pending", "in_progress"]);
+
+  // Viewers only see their own tasks
+  const conditions = user?.role === "viewer" && user.employeeId
+    ? and(baseConditions, eq(tasks.assignedTo, user.employeeId))
+    : baseConditions;
+
+  allTasks = await db.select().from(tasks).where(conditions);
 
   if (!allTasks.length) {
     await ctx.reply("No active tasks.");
@@ -267,17 +268,34 @@ export async function remindCommand(ctx: CommandContext<Context>): Promise<void>
 export async function addEmployeeCommand(ctx: CommandContext<Context>): Promise<void> {
   const args = ctx.match?.toString().trim().split(/\s+/) ?? [];
   if (!args[0]) {
-    await ctx.reply("Usage: /add_employee [name] [email] [role]\nExample: /add_employee John john@company.com Developer");
+    await ctx.reply(
+      "Usage: /add_employee [name] [email] [role] [access:admin|viewer]\n" +
+      "Example: /add_employee John john@company.com Developer access:admin\n\n" +
+      "Access roles: owner, admin, viewer (default: viewer)",
+    );
     return;
   }
 
-  const name = args[0];
-  const email = args[1] ?? null;
-  const role = args.slice(2).join(" ") || null;
+  // Parse access role from args (e.g. "access:admin")
+  const accessArg = args.find((a) => a.startsWith("access:"));
+  const filteredArgs = args.filter((a) => !a.startsWith("access:"));
+  const accessRole = accessArg ? accessArg.split(":")[1] : "viewer";
 
-  await db.insert(employees).values({ name, email, role });
+  if (!["owner", "admin", "viewer"].includes(accessRole)) {
+    await ctx.reply("Invalid access role. Use: owner, admin, or viewer.");
+    return;
+  }
 
-  await ctx.reply(`Added employee: <b>${name}</b> (${role ?? "no role"})`, { parse_mode: "HTML" });
+  const name = filteredArgs[0];
+  const email = filteredArgs[1] ?? null;
+  const role = filteredArgs.slice(2).join(" ") || null;
+
+  await db.insert(employees).values({ name, email, role, accessRole });
+
+  await ctx.reply(
+    `Added employee: <b>${name}</b> (${role ?? "no role"}, access: ${accessRole})`,
+    { parse_mode: "HTML" },
+  );
 }
 
 export async function addClientCommand(ctx: CommandContext<Context>): Promise<void> {
@@ -711,7 +729,8 @@ export async function askCommand(ctx: Context): Promise<void> {
   const query = ctx.message?.text;
   if (!query) return;
 
-  logger.info({ query: query.slice(0, 100) }, "Owner query received");
+  const user = getAuthUser(ctx);
+  logger.info({ query: query.slice(0, 100), user: user?.name, role: user?.role }, "User query received");
 
   const { text, files } = await agent.answerQuery(query);
 

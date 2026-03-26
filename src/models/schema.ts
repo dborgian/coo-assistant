@@ -19,6 +19,8 @@ export const employees = pgTable("employees", {
   // Telegram
   telegramUserId: bigint("telegram_user_id", { mode: "number" }).unique(),
   telegramUsername: text("telegram_username"),
+  // Bot access role (owner, admin, viewer)
+  accessRole: text("access_role").default("viewer"),
   // Timestamps
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),

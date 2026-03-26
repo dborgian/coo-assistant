@@ -4,6 +4,7 @@ import { config } from "../config.js";
 import { db } from "../models/database.js";
 import { tasks } from "../models/schema.js";
 import { logger } from "../utils/logger.js";
+import { sendEmployeeMessage } from "../utils/telegram.js";
 
 const PRIORITY_ORDER = ["low", "medium", "high", "urgent"] as const;
 
@@ -25,7 +26,7 @@ export async function runAutoPrioritization(bot: Bot): Promise<void> {
   if (!activeTasks.length) return;
 
   const now = Date.now();
-  const upgrades: string[] = [];
+  const upgrades: { text: string; assignedTo: string | null }[] = [];
 
   for (const task of activeTasks) {
     // Skip blocked tasks
@@ -65,13 +66,27 @@ export async function runAutoPrioritization(bot: Bot): Promise<void> {
         .set({ priority: newPriority, updatedAt: new Date() })
         .where(eq(tasks.id, task.id));
 
-      upgrades.push(`"${task.title}": ${task.priority} -> ${newPriority}`);
+      upgrades.push({ text: `"${task.title}": ${task.priority} -> ${newPriority}`, assignedTo: task.assignedTo });
       logger.info({ task: task.title, from: task.priority, to: newPriority }, "Task auto-prioritized");
     }
   }
 
   if (upgrades.length) {
-    const message = `\uD83D\uDD04 Auto-prioritizzazione: aggiornati ${upgrades.length} task:\n${upgrades.join("\n")}`;
+    // Notify each assignee about their task priority changes
+    const byAssignee = new Map<string, string[]>();
+    for (const u of upgrades) {
+      if (u.assignedTo) {
+        if (!byAssignee.has(u.assignedTo)) byAssignee.set(u.assignedTo, []);
+        byAssignee.get(u.assignedTo)!.push(u.text);
+      }
+    }
+    for (const [assigneeId, texts] of byAssignee) {
+      await sendEmployeeMessage(bot, assigneeId, `\uD83D\uDD04 Priorita' aggiornata:\n${texts.join("\n")}`);
+    }
+
+    // Summary to owner
+    const allTexts = upgrades.map((u) => u.text);
+    const message = `\uD83D\uDD04 Auto-prioritizzazione: aggiornati ${upgrades.length} task:\n${allTexts.join("\n")}`;
     try {
       await bot.api.sendMessage(config.TELEGRAM_OWNER_CHAT_ID, message);
     } catch (err) {

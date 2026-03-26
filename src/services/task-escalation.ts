@@ -7,11 +7,13 @@ import { employees, tasks } from "../models/schema.js";
 import { sendEmail } from "./email-manager.js";
 import { sendSlackMessage, sendSlackTaskNotification } from "../bot/slack-monitor.js";
 import { logger } from "../utils/logger.js";
+import { notifyAssigneeAndOwner } from "../utils/telegram.js";
 
 interface EscalationAction {
   taskId: string;
   taskTitle: string;
   newLevel: number;
+  assignedTo?: string;
   assigneeName?: string;
   assigneeEmail?: string;
   assigneeSlackId?: string;
@@ -87,6 +89,7 @@ export async function runEscalationCheck(bot: Bot): Promise<void> {
       taskId: task.id,
       taskTitle: task.title,
       newLevel,
+      assignedTo: task.assignedTo ?? undefined,
       assigneeName,
       assigneeEmail,
       assigneeSlackId,
@@ -114,20 +117,20 @@ export async function runEscalationCheck(bot: Bot): Promise<void> {
 }
 
 async function executeEscalation(bot: Bot, action: EscalationAction): Promise<void> {
-  const { taskTitle, newLevel, assigneeName, assigneeEmail, assigneeSlackId } = action;
+  const { taskTitle, newLevel, assignedTo, assigneeName, assigneeEmail, assigneeSlackId } = action;
   const assignee = assigneeName ?? "non assegnato";
 
   switch (newLevel) {
     case 0: {
-      // L0: Soft reminder — Telegram to founder
-      await bot.api.sendMessage(
-        config.TELEGRAM_OWNER_CHAT_ID,
+      // L0: Soft reminder — Telegram to assignee + owner
+      await notifyAssigneeAndOwner(
+        bot, assignedTo ?? null,
         `\u23F0 Task "${taskTitle}" scade tra meno di 48 ore (${assignee})`,
       );
       break;
     }
     case 1: {
-      // L1: Direct reminder — Email + Slack DM to assignee
+      // L1: Direct reminder — Email + Slack DM to assignee + Telegram
       if (assigneeEmail) {
         await sendEmail(
           assigneeEmail,
@@ -138,16 +141,16 @@ async function executeEscalation(bot: Bot, action: EscalationAction): Promise<vo
       if (assigneeSlackId) {
         await sendSlackTaskNotification(assigneeSlackId, `\u23F0 Reminder: il task "${taskTitle}" scade domani. Aggiorna lo stato per favore.`, action.taskId);
       }
-      await bot.api.sendMessage(
-        config.TELEGRAM_OWNER_CHAT_ID,
+      await notifyAssigneeAndOwner(
+        bot, assignedTo ?? null,
         `\u23F0 L1: Task "${taskTitle}" scade tra 24h — notificato ${assignee} via ${assigneeEmail ? "email" : ""}${assigneeEmail && assigneeSlackId ? " + " : ""}${assigneeSlackId ? "Slack" : ""}`,
       );
       break;
     }
     case 2: {
       // L2: Overdue alert — Telegram + Email
-      await bot.api.sendMessage(
-        config.TELEGRAM_OWNER_CHAT_ID,
+      await notifyAssigneeAndOwner(
+        bot, assignedTo ?? null,
         `\uD83D\uDD34 OVERDUE: Task "${taskTitle}" ha superato la scadenza! (${assignee})`,
       );
       if (assigneeEmail) {
@@ -161,8 +164,8 @@ async function executeEscalation(bot: Bot, action: EscalationAction): Promise<vo
     }
     case 3: {
       // L3: Stale warning — Telegram + Slack #general
-      await bot.api.sendMessage(
-        config.TELEGRAM_OWNER_CHAT_ID,
+      await notifyAssigneeAndOwner(
+        bot, assignedTo ?? null,
         `\u26A0\uFE0F Task "${taskTitle}" fermo da 3+ giorni dopo la scadenza (${assignee}). Serve intervento.`,
       );
       if (config.SLACK_NOTIFICATIONS_CHANNEL) {
@@ -184,8 +187,8 @@ async function executeEscalation(bot: Bot, action: EscalationAction): Promise<vo
         recommendation = "Impossibile generare raccomandazione AI.";
       }
 
-      await bot.api.sendMessage(
-        config.TELEGRAM_OWNER_CHAT_ID,
+      await notifyAssigneeAndOwner(
+        bot, assignedTo ?? null,
         `\uD83D\uDEA8 ESCALATION CRITICA: Task "${taskTitle}" (${assignee}) — overdue da 7+ giorni\n\n\uD83E\uDD16 Raccomandazione: ${recommendation}`,
       );
       break;
