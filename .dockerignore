@@ -1,0 +1,14 @@
+node_modules
+dist
+.env
+.env.*
+*.db
+data/
+coverage/
+drizzle/
+.claude/
+CLAUDE.md
+CLAUDE.local.md
+.git
+.gitignore
+*.md

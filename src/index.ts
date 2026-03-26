@@ -8,6 +8,18 @@ import { generateAndSendDailyReport } from "./services/daily-reporter.js";
 import { checkImportantEmails } from "./services/email-manager.js";
 import { checkAndSendReminders } from "./services/task-reminder.js";
 import { syncNotionData } from "./services/notion-sync.js";
+import { runEscalationCheck } from "./services/task-escalation.js";
+import { runAutoPrioritization } from "./services/auto-prioritizer.js";
+import { generateRecurringTasks } from "./services/recurring-tasks.js";
+import { updateWorkloadMetrics } from "./services/workload-tracker.js";
+import { detectStaleTasks } from "./services/stale-detector.js";
+import { autoScheduleTasks } from "./services/auto-scheduler.js";
+import { generateAndSendAgendas } from "./services/smart-agenda.js";
+import { runProactiveCheck, generateWeeklyDigest } from "./services/proactive-actions.js";
+import { checkMeetingActionItems } from "./services/meeting-actions.js";
+import { sendWeeklyClientUpdates } from "./services/client-updates.js";
+import { syncTasksToNotion, syncNotionToTasks } from "./services/notion-two-way-sync.js";
+import { exportWeeklyMetrics } from "./services/sheets-dashboard.js";
 import { startUserbot, stopUserbot } from "./bot/monitors.js";
 import { startSlackMonitor, stopSlackMonitor } from "./bot/slack-monitor.js";
 import { logger } from "./utils/logger.js";
@@ -32,6 +44,19 @@ async function main(): Promise<void> {
     emailCheck: () => checkImportantEmails(bot),
     taskReminders: () => checkAndSendReminders(bot),
     notionSync: () => syncNotionData(bot),
+    escalationCheck: () => runEscalationCheck(bot),
+    autoPrioritization: () => runAutoPrioritization(bot),
+    recurringTasks: () => generateRecurringTasks(bot),
+    workloadMetrics: () => updateWorkloadMetrics(),
+    staleDetection: () => detectStaleTasks(bot),
+    autoScheduling: () => autoScheduleTasks(bot),
+    smartAgenda: () => generateAndSendAgendas(bot),
+    proactiveCheck: () => runProactiveCheck(bot),
+    weeklyDigest: () => generateWeeklyDigest(bot),
+    meetingActions: () => checkMeetingActionItems(bot),
+    clientUpdates: () => sendWeeklyClientUpdates(bot),
+    notionTwoWaySync: async () => { await syncTasksToNotion(bot); await syncNotionToTasks(bot); },
+    sheetsExport: () => exportWeeklyMetrics(bot),
   });
 
   // Start Telethon/GramJS userbot for chat monitoring

@@ -133,9 +133,14 @@ export async function sendEmail(
 
   const gmail = google.gmail({ version: "v1", auth });
 
+  // RFC 2047 encode subject if it contains non-ASCII (e.g. emoji)
+  const encodedSubject = /^[\x20-\x7E]*$/.test(subject)
+    ? subject
+    : `=?UTF-8?B?${Buffer.from(subject, "utf-8").toString("base64")}?=`;
+
   const rawMessage = [
     `To: ${to}`,
-    `Subject: ${subject}`,
+    `Subject: ${encodedSubject}`,
     "Content-Type: text/plain; charset=utf-8",
     "",
     body,

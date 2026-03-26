@@ -1,9 +1,10 @@
 import { App as SlackApp } from "@slack/bolt";
 import type { Bot } from "grammy";
+import { eq, sql } from "drizzle-orm";
 import { agent } from "../core/agent.js";
 import { config } from "../config.js";
 import { db } from "../models/database.js";
-import { messageLogs } from "../models/schema.js";
+import { messageLogs, tasks } from "../models/schema.js";
 import { logger } from "../utils/logger.js";
 
 let slackApp: SlackApp | null = null;
@@ -33,6 +34,35 @@ export async function startSlackMonitor(bot: Bot): Promise<boolean> {
       await onSlackMessage(message, client);
     } catch (err) {
       logger.error({ err }, "Error processing Slack message");
+    }
+  });
+
+  // Slack interactive button handlers
+  slackApp.action("complete_task", async ({ action, ack, respond }) => {
+    await ack();
+    try {
+      const taskId = (action as any).value;
+      await db.update(tasks).set({ status: "done", updatedAt: new Date() }).where(eq(tasks.id, taskId));
+      await respond({ text: "\u2705 Task completato!", replace_original: false });
+      logger.info({ taskId }, "Task completed via Slack button");
+    } catch (err) {
+      logger.error({ err }, "Failed to complete task via Slack");
+      await respond({ text: "Errore nel completare il task.", replace_original: false });
+    }
+  });
+
+  slackApp.action("snooze_task", async ({ action, ack, respond }) => {
+    await ack();
+    try {
+      const taskId = (action as any).value;
+      const pauseUntil = new Date();
+      pauseUntil.setDate(pauseUntil.getDate() + 3);
+      await db.update(tasks).set({ escalationPausedUntil: pauseUntil, updatedAt: new Date() }).where(eq(tasks.id, taskId));
+      await respond({ text: `\u23F8\uFE0F Escalation in pausa per 3 giorni.`, replace_original: false });
+      logger.info({ taskId }, "Task snoozed via Slack button");
+    } catch (err) {
+      logger.error({ err }, "Failed to snooze task via Slack");
+      await respond({ text: "Errore nello snooze del task.", replace_original: false });
     }
   });
 
@@ -182,6 +212,49 @@ export function addMonitoredSlackChannel(channelId: string): void {
 export function removeMonitoredSlackChannel(channelId: string): void {
   const idx = config.MONITORED_SLACK_CHANNELS.indexOf(channelId);
   if (idx !== -1) config.MONITORED_SLACK_CHANNELS.splice(idx, 1);
+}
+
+export async function sendSlackTaskNotification(
+  channelId: string,
+  text: string,
+  taskId: string,
+): Promise<boolean> {
+  if (!slackApp) return false;
+
+  try {
+    await slackApp.client.chat.postMessage({
+      channel: channelId,
+      text,
+      blocks: [
+        {
+          type: "section",
+          text: { type: "mrkdwn", text },
+        },
+        {
+          type: "actions",
+          elements: [
+            {
+              type: "button",
+              text: { type: "plain_text", text: "\u2705 Completa" },
+              action_id: "complete_task",
+              value: taskId,
+              style: "primary",
+            },
+            {
+              type: "button",
+              text: { type: "plain_text", text: "\u23F8\uFE0F Snooze 3gg" },
+              action_id: "snooze_task",
+              value: taskId,
+            },
+          ],
+        },
+      ],
+    });
+    return true;
+  } catch (err) {
+    logger.error({ err, channel: channelId }, "Failed to send Slack task notification");
+    return false;
+  }
 }
 
 export async function sendSlackMessage(channelId: string, text: string): Promise<boolean> {

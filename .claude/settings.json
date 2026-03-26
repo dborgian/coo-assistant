@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc:*)",
+      "Bash(npx tsx:*)",
+      "Bash(npx drizzle-kit:*)",
+      "Bash(node:*)",
+      "Bash(npm run:*)"
+    ]
+  }
+}

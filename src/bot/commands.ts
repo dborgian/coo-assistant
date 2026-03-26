@@ -713,13 +713,19 @@ export async function askCommand(ctx: Context): Promise<void> {
 
   logger.info({ query: query.slice(0, 100) }, "Owner query received");
 
-  const response = await agent.answerQuery(query);
+  const { text, files } = await agent.answerQuery(query);
 
-  if (response.length > 4000) {
-    for (let i = 0; i < response.length; i += 4000) {
-      await ctx.reply(response.slice(i, i + 4000));
+  if (text.length > 4000) {
+    for (let i = 0; i < text.length; i += 4000) {
+      await ctx.reply(text.slice(i, i + 4000));
     }
   } else {
-    await ctx.reply(response);
+    await ctx.reply(text);
+  }
+
+  if (files) {
+    for (const f of files) {
+      await ctx.replyWithDocument(new InputFile(f.buffer, f.filename));
+    }
   }
 }

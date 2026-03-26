@@ -7,6 +7,7 @@ import { dailyReports, messageLogs, tasks } from "../models/schema.js";
 import { getTodayEvents } from "./calendar-sync.js";
 import { getUnreadImportantEmails } from "./email-manager.js";
 import { getNotionWorkspaceSummary, isNotionConfigured } from "./notion-sync.js";
+import { getTeamWorkload } from "./workload-tracker.js";
 import { logger } from "../utils/logger.js";
 
 export async function generateAndSendDailyReport(bot: Bot): Promise<void> {
@@ -91,6 +92,7 @@ export async function generateAndSendDailyReport(bot: Bot): Promise<void> {
       notion_overdue: notionData?.tasks.filter((t) => t.isOverdue).length ?? 0,
       slack_messages_today: slackMsgs.length,
     },
+    team_workload: await getTeamWorkload().catch(() => []),
   };
 
   const reportContent = await agent.generateDailyReport(reportData);
