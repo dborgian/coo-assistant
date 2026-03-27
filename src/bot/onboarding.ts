@@ -354,10 +354,12 @@ export async function handleOAuthCallback(
     }
 
     return { ok: true, message: "Autenticazione completata! Puoi tornare a Telegram." };
-  } catch (err) {
-    logger.error({ err, telegramId }, "OAuth callback code exchange failed");
+  } catch (err: unknown) {
+    const errDetail = err instanceof Error ? err.message : String(err);
+    const errResponse = (err as Record<string, unknown>)?.response;
+    logger.error({ err, errDetail, errResponse, telegramId, codeLength: code.length }, "OAuth callback code exchange failed");
     pendingOAuth.delete(telegramId);
-    return { ok: false, message: "Codice non valido o scaduto. Torna su Telegram e riprova con /start." };
+    return { ok: false, message: `Errore OAuth: ${errDetail}. Torna su Telegram e riprova con /start.` };
   }
 }
 
