@@ -332,17 +332,20 @@ export async function addEmployeeCommand(ctx: CommandContext<Context>): Promise<
   const args = ctx.match?.toString().trim().split(/\s+/) ?? [];
   if (!args[0]) {
     await ctx.reply(
-      "Usage: /add_employee [name] [email] [role] [access:admin|viewer]\n" +
-      "Example: /add_employee John john@company.com Developer access:admin\n\n" +
-      "Access roles: owner, admin, viewer (default: viewer)",
+      "Usage: /add_employee [name] [email] [role] [access:admin|viewer] [tz:timezone]\n" +
+      "Example: /add_employee John john@company.com Developer access:admin tz:America/New_York\n\n" +
+      "Access roles: owner, admin, viewer (default: viewer)\n" +
+      "Timezone: IANA timezone (default: server timezone)",
     );
     return;
   }
 
-  // Parse access role from args (e.g. "access:admin")
+  // Parse access role and timezone from args
   const accessArg = args.find((a) => a.startsWith("access:"));
-  const filteredArgs = args.filter((a) => !a.startsWith("access:"));
+  const tzArg = args.find((a) => a.startsWith("tz:"));
+  const filteredArgs = args.filter((a) => !a.startsWith("access:") && !a.startsWith("tz:"));
   const accessRole = accessArg ? accessArg.split(":")[1] : "viewer";
+  const timezone = tzArg ? tzArg.slice(3) : null;
 
   if (!["owner", "admin", "viewer"].includes(accessRole)) {
     await ctx.reply("Invalid access role. Use: owner, admin, or viewer.");
@@ -353,10 +356,11 @@ export async function addEmployeeCommand(ctx: CommandContext<Context>): Promise<
   const email = filteredArgs[1] ?? null;
   const role = filteredArgs.slice(2).join(" ") || null;
 
-  await db.insert(employees).values({ name, email, role, accessRole });
+  await db.insert(employees).values({ name, email, role, accessRole, timezone });
 
+  const tzInfo = timezone ? `, tz: ${timezone}` : "";
   await ctx.reply(
-    `Added employee: <b>${name}</b> (${role ?? "no role"}, access: ${accessRole})`,
+    `Added employee: <b>${name}</b> (${role ?? "no role"}, access: ${accessRole}${tzInfo})`,
     { parse_mode: "HTML" },
   );
 }

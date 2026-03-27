@@ -23,6 +23,8 @@ export const employees = pgTable("employees", {
   accessRole: text("access_role").default("viewer"),
   // Google OAuth per-user
   googleRefreshToken: text("google_refresh_token"),
+  // User timezone (e.g. "America/New_York"), null = config.TIMEZONE default
+  timezone: text("timezone"),
   // Timestamps
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),

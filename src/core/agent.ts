@@ -141,8 +141,8 @@ interface ClassificationResult {
  * Accepts: "2026-03-26", "2026-03-26T16:00", "2026-03-26T16:00:00"
  * If no time is provided, defaults to 23:59 local time (end of day).
  */
-function parseLocalDate(dateStr: string): Date {
-  const tz = config.TIMEZONE || "Europe/Rome";
+function parseLocalDate(dateStr: string, tzOverride?: string): Date {
+  const tz = tzOverride || config.TIMEZONE || "Europe/Rome";
 
   if (dateStr.includes("T")) {
     // Has time component — parse as local datetime
@@ -666,7 +666,7 @@ ${JSON.stringify(data, null, 2)}`;
   ];
 
   // --- Execute a tool call ---
-  private async executeTool(name: string, input: Record<string, any>, userAuth?: GoogleAuth | null): Promise<string> {
+  private async executeTool(name: string, input: Record<string, any>, userAuth?: GoogleAuth | null, userTz?: string): Promise<string> {
     try {
       if (name === "create_task") {
         let assignedTo: string | null = null;
@@ -681,7 +681,7 @@ ${JSON.stringify(data, null, 2)}`;
           description: input.description ?? null,
           priority: input.priority ?? "medium",
           assignedTo,
-          dueDate: input.due_date ? parseLocalDate(input.due_date) : null,
+          dueDate: input.due_date ? parseLocalDate(input.due_date, userTz) : null,
           source: "ai",
           status: "pending",
         }).returning({ id: tasks.id });
@@ -924,7 +924,7 @@ ${JSON.stringify(data, null, 2)}`;
         if (input.new_title) updates.title = input.new_title;
         if (input.new_description) updates.description = input.new_description;
         if (input.new_priority) updates.priority = input.new_priority;
-        if (input.new_due_date) updates.dueDate = parseLocalDate(input.new_due_date);
+        if (input.new_due_date) updates.dueDate = parseLocalDate(input.new_due_date, userTz);
         if (input.new_assigned_to) {
           const [emp] = await db.select().from(employees)
             .where(sql`${employees.name} ILIKE ${"%" + input.new_assigned_to + "%"}`).limit(1);
@@ -937,7 +937,7 @@ ${JSON.stringify(data, null, 2)}`;
           updateGoogleTask(task.id, {
             title: input.new_title,
             description: input.new_description,
-            dueDate: input.new_due_date ? parseLocalDate(input.new_due_date) : undefined,
+            dueDate: input.new_due_date ? parseLocalDate(input.new_due_date, userTz) : undefined,
           }).catch(() => {});
         }
         // Trigger reschedule if priority or deadline changed and task was scheduled
@@ -950,9 +950,10 @@ ${JSON.stringify(data, null, 2)}`;
       if (name === "get_calendar_events") {
         const events = await getTodayEvents(userAuth);
         if (!events.length) return "Nessun evento in calendario per oggi.";
+        const displayTz = userTz || config.TIMEZONE;
         return events.map((e) => {
-          const start = e.start ? new Date(e.start).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" }) : "TBD";
-          const end = e.end ? new Date(e.end).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" }) : "";
+          const start = e.start ? new Date(e.start).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", timeZone: displayTz }) : "TBD";
+          const end = e.end ? new Date(e.end).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", timeZone: displayTz }) : "";
           return `- ${start}${end ? `-${end}` : ""}: ${e.summary}${e.location ? ` (${e.location})` : ""}`;
         }).join("\n");
       }
@@ -984,7 +985,7 @@ ${JSON.stringify(data, null, 2)}`;
           isRecurring: true,
           recurrencePattern: input.pattern,
           recurrenceDays: input.days ?? null,
-          recurrenceEndDate: input.end_date ? parseLocalDate(input.end_date) : null,
+          recurrenceEndDate: input.end_date ? parseLocalDate(input.end_date, userTz) : null,
           source: "ai",
           status: "pending",
         });
@@ -1232,7 +1233,7 @@ Genera 5-10 task concreti e actionable.`,
             title: pt.title,
             priority: pt.priority ?? "medium",
             estimatedMinutes: pt.estimated_minutes ?? 60,
-            dueDate: input.deadline ? parseLocalDate(input.deadline) : null,
+            dueDate: input.deadline ? parseLocalDate(input.deadline, userTz) : null,
             source: "ai",
             status: "pending",
           }).returning({ id: tasks.id });
@@ -1374,6 +1375,15 @@ Genera 5-10 task concreti e actionable.`,
     // Resolve per-user Google auth (falls back to global if no personal token)
     const userAuth = await getAuthForEmployee(employeeId);
 
+    // Resolve per-user timezone
+    let userTz: string | undefined;
+    if (employeeId) {
+      try {
+        const [emp] = await db.select({ timezone: employees.timezone }).from(employees).where(eq(employees.id, employeeId)).limit(1);
+        if (emp?.timezone) userTz = emp.timezone;
+      } catch { /* fallback to config.TIMEZONE */ }
+    }
+
     // Build context based on role
     const context = await this.buildContextForRole(query, userRole, employeeId, userAuth);
 
@@ -1419,7 +1429,7 @@ Genera 5-10 task concreti e actionable.`,
       for (const block of toolUseBlocks) {
         if (block.type === "tool_use") {
           logger.info({ tool: block.name, input: block.input }, "AI executing tool");
-          const result = await this.executeTool(block.name, block.input as Record<string, any>, userAuth);
+          const result = await this.executeTool(block.name, block.input as Record<string, any>, userAuth, userTz);
           toolResults.push({ type: "tool_result", tool_use_id: block.id, content: result });
         }
       }
