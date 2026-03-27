@@ -95,7 +95,14 @@ async function resolveSlackUser(slackUserId: string): Promise<SlackAuthUser | nu
   return null;
 }
 
-async function handleSlackQuery(text: string, slackUserId: string, say: (msg: any) => Promise<any>, threadTs?: string): Promise<void> {
+async function handleSlackQuery(
+  text: string,
+  slackUserId: string,
+  say: (msg: any) => Promise<any>,
+  channelId?: string,
+  messageTs?: string,
+  threadTs?: string,
+): Promise<void> {
   const user = await resolveSlackUser(slackUserId);
   if (!user) {
     await say({ text: "Non sei registrato nel sistema. Chiedi all'admin di aggiungere il tuo Slack Member ID.", ...(threadTs ? { thread_ts: threadTs } : {}) });
@@ -103,6 +110,11 @@ async function handleSlackQuery(text: string, slackUserId: string, say: (msg: an
   }
 
   logger.info({ slackUser: slackUserId, name: user.name, role: user.role, query: text.slice(0, 80) }, "Slack AI query");
+
+  // Add hourglass reaction while thinking
+  if (slackApp && channelId && messageTs) {
+    await slackApp.client.reactions.add({ channel: channelId, timestamp: messageTs, name: "hourglass_flowing_sand" }).catch(() => {});
+  }
 
   try {
     const response = await agent.answerQuery(text, user.role, user.employeeId);
@@ -113,9 +125,20 @@ async function handleSlackQuery(text: string, slackUserId: string, say: (msg: an
     for (const chunk of chunks) {
       await say({ text: chunk, ...(threadTs ? { thread_ts: threadTs } : {}) });
     }
+
+    // Replace hourglass with checkmark
+    if (slackApp && channelId && messageTs) {
+      await slackApp.client.reactions.remove({ channel: channelId, timestamp: messageTs, name: "hourglass_flowing_sand" }).catch(() => {});
+      await slackApp.client.reactions.add({ channel: channelId, timestamp: messageTs, name: "white_check_mark" }).catch(() => {});
+    }
   } catch (err) {
     logger.error({ err, slackUser: slackUserId }, "Slack AI query failed");
     await say({ text: "Errore nell'elaborazione della richiesta.", ...(threadTs ? { thread_ts: threadTs } : {}) });
+    // Replace hourglass with X on error
+    if (slackApp && channelId && messageTs) {
+      await slackApp.client.reactions.remove({ channel: channelId, timestamp: messageTs, name: "hourglass_flowing_sand" }).catch(() => {});
+      await slackApp.client.reactions.add({ channel: channelId, timestamp: messageTs, name: "x" }).catch(() => {});
+    }
   }
 }
 
@@ -134,37 +157,48 @@ export async function startSlackMonitor(bot: Bot): Promise<boolean> {
     socketMode: true,
   });
 
-  // App mention handler: @COO-Assistant in channels
+  // App mention handler: @COO-Assistant in channels (kept for backwards compat)
   slackApp.event("app_mention", async ({ event, say }) => {
     try {
-      // Strip the mention tag to get the actual query
       const text = (event.text || "").replace(/<@[A-Z0-9]+>/g, "").trim();
       if (!event.user) return;
       if (!text) {
-        await say({ text: "Ciao! Scrivimi una domanda dopo avermi menzionato.", thread_ts: event.ts });
+        await say({ text: "Ciao! Chiedimi quello che vuoi.", thread_ts: event.ts });
         return;
       }
-      await handleSlackQuery(text, event.user, say, event.ts);
+      await handleSlackQuery(text, event.user, say, event.channel, event.ts, event.ts);
     } catch (err) {
       logger.error({ err }, "Error handling Slack app_mention");
     }
   });
 
-  // Message handler: monitors channels + handles DMs
+  // Message handler: monitors channels + handles DMs + proactive responses
   slackApp.message(async ({ message, client, say }) => {
     try {
-      // Handle DMs (direct messages to the bot)
-      if ((message as any).channel_type === "im" && !((message as any).bot_id) && (message as any).text?.trim()) {
-        const text = (message as any).text.trim();
-        const userId = (message as any).user;
-        if (userId) {
-          await handleSlackQuery(text, userId, say);
-          return;
-        }
+      const msg = message as any;
+      // Skip bot messages
+      if (msg.bot_id || msg.subtype === "bot_message") return;
+      if (!msg.text?.trim()) return;
+
+      const text = msg.text.trim();
+      const userId = msg.user;
+      const channelId = msg.channel;
+      const msgTs = msg.ts;
+
+      // Handle DMs — always respond
+      if (msg.channel_type === "im" && userId) {
+        await handleSlackQuery(text, userId, say, channelId, msgTs);
+        return;
       }
 
-      // Regular channel monitoring (existing behavior)
-      await onSlackMessage(message, client);
+      // Channel messages — respond proactively to all messages in channels where the bot is present
+      if (userId) {
+        // Run monitoring pipeline in parallel (logging, classification, Telegram notification)
+        onSlackMessage(message, client).catch(() => {});
+
+        // Respond to the message via AI
+        await handleSlackQuery(text, userId, say, channelId, msgTs, msg.thread_ts ?? msgTs);
+      }
     } catch (err) {
       logger.error({ err }, "Error processing Slack message");
     }
