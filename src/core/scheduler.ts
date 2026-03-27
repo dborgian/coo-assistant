@@ -33,6 +33,9 @@ interface ScheduledJobs {
   topicExtraction?: cron.ScheduledTask;
   threadSummarizer?: cron.ScheduledTask;
   dailySlackDigest?: cron.ScheduledTask;
+  eodPrompts?: cron.ScheduledTask;
+  eodCollect?: cron.ScheduledTask;
+  meetingNotes?: cron.ScheduledTask;
 }
 
 const jobs: ScheduledJobs = {};
@@ -66,6 +69,9 @@ export function setupSchedules(callbacks: {
   topicExtraction: JobCallback;
   threadSummarizer: JobCallback;
   dailySlackDigest: JobCallback;
+  eodPrompts: JobCallback;
+  eodCollect: JobCallback;
+  meetingNotes: JobCallback;
 }): void {
   // Daily operations report
   const { DAILY_REPORT_HOUR: h, DAILY_REPORT_MINUTE: m, TIMEZONE: tz } = config;
@@ -261,6 +267,26 @@ export function setupSchedules(callbacks: {
   jobs.dailySlackDigest = cron.schedule("0 18 * * *", () => {
     callbacks.dailySlackDigest().catch((err) =>
       logger.error({ err }, "Daily Slack digest failed"),
+    );
+  }, { timezone: tz });
+
+  // EOD prompts (17:30) and collection (18:30)
+  jobs.eodPrompts = cron.schedule("30 17 * * 1-5", () => {
+    callbacks.eodPrompts().catch((err) =>
+      logger.error({ err }, "EOD prompts failed"),
+    );
+  }, { timezone: tz });
+
+  jobs.eodCollect = cron.schedule("30 18 * * 1-5", () => {
+    callbacks.eodCollect().catch((err) =>
+      logger.error({ err }, "EOD collection failed"),
+    );
+  }, { timezone: tz });
+
+  // Meeting notes (every 30 min during work hours)
+  jobs.meetingNotes = cron.schedule("*/30 8-19 * * 1-5", () => {
+    callbacks.meetingNotes().catch((err) =>
+      logger.error({ err }, "Meeting notes check failed"),
     );
   }, { timezone: tz });
 

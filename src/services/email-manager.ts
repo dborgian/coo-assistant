@@ -167,6 +167,49 @@ export async function sendEmail(
   }
 }
 
+export async function searchEmails(query: string, maxResults = 5, authOverride?: GoogleAuth | null): Promise<EmailSummary[]> {
+  const auth = authOverride ?? getGoogleAuth();
+  if (!auth) return [];
+
+  const gmail = google.gmail({ version: "v1", auth });
+
+  try {
+    const res = await gmail.users.messages.list({
+      userId: "me",
+      q: query,
+      maxResults,
+    });
+
+    const messages = res.data.messages ?? [];
+    const emails: EmailSummary[] = [];
+
+    for (const msg of messages) {
+      const detail = await gmail.users.messages.get({
+        userId: "me",
+        id: msg.id!,
+        format: "metadata",
+        metadataHeaders: ["From", "Subject", "Date"],
+      });
+
+      const headers = detail.data.payload?.headers ?? [];
+      const getHeader = (name: string) => headers.find((h) => h.name === name)?.value ?? "";
+
+      emails.push({
+        id: msg.id!,
+        from: getHeader("From"),
+        subject: getHeader("Subject"),
+        snippet: detail.data.snippet ?? "",
+        date: getHeader("Date"),
+      });
+    }
+
+    return emails;
+  } catch (err) {
+    logger.error({ err, query }, "Failed to search emails");
+    return [];
+  }
+}
+
 function escapeHtml(text: string): string {
   return text
     .replace(/&/g, "&amp;")

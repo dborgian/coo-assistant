@@ -34,6 +34,10 @@ export const TOOL_PERMISSIONS: Record<string, AccessRole[]> = {
   delete_calendar_event: ["owner", "admin"],
   unschedule_task: ["owner", "admin"],
 
+  // GOOGLE DOCS + SEARCH
+  create_google_doc: ["owner", "admin"],
+  unified_search: ["owner", "admin"],
+
   // SENSITIVE: strategic analytics (owner only)
   get_team_sentiment: ["owner"],
   get_communication_patterns: ["owner"],

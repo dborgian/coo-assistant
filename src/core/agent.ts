@@ -26,6 +26,8 @@ import { getCommunicationOverview } from "../services/communication-patterns.js"
 import { queryKnowledge } from "../services/knowledge-base.js";
 import { getTopics, getClientMentions } from "../services/topic-analyzer.js";
 import { getMeetingStats } from "../services/meeting-intelligence.js";
+import { createGoogleDoc } from "../services/google-docs-manager.js";
+import { unifiedSearch } from "../services/unified-search.js";
 import type { Tool, ToolResultBlockParam } from "@anthropic-ai/sdk/resources/messages.js";
 import type { AccessRole } from "../bot/auth.js";
 import { getAllowedToolNames } from "../bot/permissions.js";
@@ -663,6 +665,30 @@ ${JSON.stringify(data, null, 2)}`;
         required: ["task_title"],
       },
     },
+    {
+      name: "create_google_doc",
+      description: "Create a Google Doc with specified content. Use for meeting notes, reports, summaries, or any document the user wants saved to Drive.",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          title: { type: "string", description: "Document title" },
+          content: { type: "string", description: "Document content (plain text)" },
+        },
+        required: ["title", "content"],
+      },
+    },
+    {
+      name: "unified_search",
+      description: "Search across all tools simultaneously: Google Drive, Notion, Gmail, Slack messages, tasks, and knowledge base. Use when user asks to find something across multiple sources.",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          query: { type: "string", description: "Search query" },
+          source: { type: "string", enum: ["all", "drive", "notion", "tasks", "slack", "knowledge"], description: "Filter by source (default: all)" },
+        },
+        required: ["query"],
+      },
+    },
   ];
 
   // --- Execute a tool call ---
@@ -1281,6 +1307,19 @@ Genera 5-10 task concreti e actionable.`,
         if (!task.autoScheduled && !task.calendarEventId) return `Task "${task.title}" non e' schedulato nel calendario.`;
         await unscheduleTask(task.id);
         return `Task "${task.title}" rimosso dal calendario.`;
+      }
+
+      if (name === "create_google_doc") {
+        const doc = await createGoogleDoc(input.title, input.content, undefined, userAuth);
+        if (!doc) return "Impossibile creare il documento. Verifica la configurazione Google.";
+        return `Documento creato: "${doc.title}"\n${doc.url}`;
+      }
+
+      if (name === "unified_search") {
+        const sourceFilter = input.source === "all" ? undefined : input.source;
+        const results = await unifiedSearch(input.query, { source: sourceFilter, authOverride: userAuth });
+        if (!results.length) return `Nessun risultato trovato per "${input.query}".`;
+        return results.map((r) => `[${r.source}] ${r.title}\n  ${r.snippet}${r.url ? `\n  ${r.url}` : ""}`).join("\n\n");
       }
 
       return `Tool "${name}" non riconosciuto.`;

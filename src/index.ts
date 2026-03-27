@@ -28,6 +28,8 @@ import { extractKnowledgeBatch } from "./services/knowledge-base.js";
 import { extractDailyTopics } from "./services/topic-analyzer.js";
 import { detectMeetingOverload } from "./services/meeting-intelligence.js";
 import { checkAndSummarizeThreads, generateDailySlackDigest } from "./services/thread-summarizer.js";
+import { sendEodPrompts, collectEodResponses } from "./services/eod-reports.js";
+import { checkRecentMeetings } from "./services/meeting-notes.js";
 import { startUserbot, stopUserbot } from "./bot/monitors.js";
 import { startSlackMonitor, stopSlackMonitor } from "./bot/slack-monitor.js";
 import { handleOAuthCallback } from "./bot/onboarding.js";
@@ -75,6 +77,9 @@ async function main(): Promise<void> {
     topicExtraction: async () => { await extractDailyTopics(); },
     threadSummarizer: async () => { await checkAndSummarizeThreads(); },
     dailySlackDigest: async () => { await generateDailySlackDigest(); },
+    eodPrompts: async () => { await sendEodPrompts(); },
+    eodCollect: async () => { await collectEodResponses(bot); },
+    meetingNotes: async () => { await checkRecentMeetings(); },
   });
 
   // Start Telethon/GramJS userbot for chat monitoring
