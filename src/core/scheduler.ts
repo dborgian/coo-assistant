@@ -31,6 +31,8 @@ interface ScheduledJobs {
   silentEmployeeCheck?: cron.ScheduledTask;
   meetingOverload?: cron.ScheduledTask;
   topicExtraction?: cron.ScheduledTask;
+  threadSummarizer?: cron.ScheduledTask;
+  dailySlackDigest?: cron.ScheduledTask;
 }
 
 const jobs: ScheduledJobs = {};
@@ -62,6 +64,8 @@ export function setupSchedules(callbacks: {
   silentEmployeeCheck: JobCallback;
   meetingOverload: JobCallback;
   topicExtraction: JobCallback;
+  threadSummarizer: JobCallback;
+  dailySlackDigest: JobCallback;
 }): void {
   // Daily operations report
   const { DAILY_REPORT_HOUR: h, DAILY_REPORT_MINUTE: m, TIMEZONE: tz } = config;
@@ -243,6 +247,20 @@ export function setupSchedules(callbacks: {
   jobs.topicExtraction = cron.schedule("0 23 * * *", () => {
     callbacks.topicExtraction().catch((err) =>
       logger.error({ err }, "Topic extraction failed"),
+    );
+  }, { timezone: tz });
+
+  // Thread summarizer (every 15 min — check for quiet threads)
+  jobs.threadSummarizer = cron.schedule("*/15 * * * *", () => {
+    callbacks.threadSummarizer().catch((err) =>
+      logger.error({ err }, "Thread summarizer failed"),
+    );
+  });
+
+  // Daily Slack channel digest (18:00)
+  jobs.dailySlackDigest = cron.schedule("0 18 * * *", () => {
+    callbacks.dailySlackDigest().catch((err) =>
+      logger.error({ err }, "Daily Slack digest failed"),
     );
   }, { timezone: tz });
 

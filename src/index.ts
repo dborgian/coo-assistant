@@ -27,6 +27,7 @@ import { checkCommitmentFulfillment } from "./services/commitment-tracker.js";
 import { extractKnowledgeBatch } from "./services/knowledge-base.js";
 import { extractDailyTopics } from "./services/topic-analyzer.js";
 import { detectMeetingOverload } from "./services/meeting-intelligence.js";
+import { checkAndSummarizeThreads, generateDailySlackDigest } from "./services/thread-summarizer.js";
 import { startUserbot, stopUserbot } from "./bot/monitors.js";
 import { startSlackMonitor, stopSlackMonitor } from "./bot/slack-monitor.js";
 import { handleOAuthCallback } from "./bot/onboarding.js";
@@ -72,6 +73,8 @@ async function main(): Promise<void> {
     silentEmployeeCheck: () => detectSilentEmployees(bot),
     meetingOverload: () => detectMeetingOverload(bot),
     topicExtraction: async () => { await extractDailyTopics(); },
+    threadSummarizer: async () => { await checkAndSummarizeThreads(); },
+    dailySlackDigest: async () => { await generateDailySlackDigest(); },
   });
 
   // Start Telethon/GramJS userbot for chat monitoring

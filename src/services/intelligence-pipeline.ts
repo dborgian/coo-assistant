@@ -16,6 +16,13 @@ const DECISION_PATTERNS = [
   /\b(we decided|let's go with|approved|decided|confirmed|agreed on|green light|final decision)\b/i,
 ];
 
+// Action item patterns (Italian + English)
+const ACTION_ITEM_PATTERNS = [
+  /\b(devi fare|da fare|TODO|action item|assicurati di|ricordati di|bisogna|dobbiamo|va fatto|serve che)\b/i,
+  /\b(please do|need to|must do|make sure|don't forget|remember to|should be done|has to be)\b/i,
+  /\b(@\w+\s+(fai|prepara|manda|controlla|verifica|sistema|aggiorna|crea|scrivi))\b/i,
+];
+
 function matchesPatterns(content: string, patterns: RegExp[]): boolean {
   return patterns.some((p) => p.test(content));
 }
@@ -40,6 +47,7 @@ export async function runInlineExtractors(
   content: string,
   senderName: string,
   channel: string,
+  threadTs?: string,
 ): Promise<void> {
   try {
     const employeeId = await findEmployeeByName(senderName);
@@ -68,6 +76,20 @@ export async function runInlineExtractors(
         status: "active",
       });
       logger.debug({ sender: senderName, channel }, "Decision detected");
+    }
+
+    // Check for action items
+    if (matchesPatterns(content, ACTION_ITEM_PATTERNS)) {
+      await db.insert(intelligenceEvents).values({
+        type: "action_item",
+        employeeId,
+        messageLogId,
+        channel,
+        content: content.slice(0, 500),
+        status: "open",
+        metadata: { senderName, threadTs },
+      });
+      logger.debug({ sender: senderName, channel }, "Action item detected");
     }
   } catch (err) {
     logger.error({ err }, "Intelligence pipeline extraction failed");

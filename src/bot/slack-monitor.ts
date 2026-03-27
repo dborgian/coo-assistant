@@ -256,7 +256,7 @@ async function handleSlackMessage(
 
   // Intelligence pipeline (regex only, fire-and-forget)
   if (insertedMsg) {
-    runInlineExtractors(insertedMsg.id, messageText, senderName, `#${channelName}`).catch(() => {});
+    runInlineExtractors(insertedMsg.id, messageText, senderName, `#${channelName}`, threadTs).catch(() => {});
   }
 
   // Notify owner via Telegram for ALL Slack messages

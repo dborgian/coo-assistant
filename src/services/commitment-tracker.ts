@@ -3,6 +3,7 @@ import { and, eq, gte, lte, sql } from "drizzle-orm";
 import { config } from "../config.js";
 import { db } from "../models/database.js";
 import { employees, intelligenceEvents, tasks } from "../models/schema.js";
+import { sendSlackMessage } from "../bot/slack-monitor.js";
 import { logger } from "../utils/logger.js";
 
 export async function checkCommitmentFulfillment(bot: Bot): Promise<void> {
@@ -44,13 +45,35 @@ export async function checkCommitmentFulfillment(bot: Bot): Promise<void> {
   }
 
   if (unfulfilled.length) {
+    const msg = `\uD83D\uDD0D Promesse non mantenute (${unfulfilled.length}):\n${unfulfilled.join("\n")}`;
     try {
-      await bot.api.sendMessage(
-        config.TELEGRAM_OWNER_CHAT_ID,
-        `\uD83D\uDD0D Promesse non mantenute (${unfulfilled.length}):\n${unfulfilled.join("\n")}`,
-      );
+      await bot.api.sendMessage(config.TELEGRAM_OWNER_CHAT_ID, msg);
+      // Also post to Slack
+      if (config.SLACK_NOTIFICATIONS_CHANNEL) {
+        await sendSlackMessage(config.SLACK_NOTIFICATIONS_CHANNEL, msg).catch(() => {});
+      }
     } catch (err) {
       logger.error({ err }, "Failed to send commitment alert");
+    }
+
+    // DM each committer on Slack if they have a slackMemberId
+    for (const commitment of openCommitments) {
+      if (!commitment.employeeId) continue;
+      const [emp] = await db
+        .select({ slackMemberId: employees.slackMemberId, name: employees.name })
+        .from(employees)
+        .where(eq(employees.id, commitment.employeeId))
+        .limit(1);
+
+      if (emp?.slackMemberId) {
+        const daysAgo = Math.floor(
+          (Date.now() - new Date(commitment.detectedAt!).getTime()) / (1000 * 60 * 60 * 24),
+        );
+        await sendSlackMessage(
+          emp.slackMemberId,
+          `Ciao ${emp.name}! Hai detto "${commitment.content.slice(0, 100)}" in ${commitment.channel ?? "?"} ${daysAgo} giorni fa. Com'e' andato? Rispondimi qui se e' stato completato.`,
+        ).catch(() => {});
+      }
     }
   }
 }
