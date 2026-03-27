@@ -25,21 +25,74 @@ async function resolveSlackUser(slackUserId: string): Promise<SlackAuthUser | nu
   const cached = slackAuthCache.get(slackUserId);
   if (cached && Date.now() - cached.cachedAt < SLACK_AUTH_TTL) return cached.user;
 
+  // Try direct lookup by slackMemberId
   const [emp] = await db
     .select({ id: employees.id, name: employees.name, accessRole: employees.accessRole, isActive: employees.isActive })
     .from(employees)
     .where(eq(employees.slackMemberId, slackUserId))
     .limit(1);
 
-  if (!emp || !emp.isActive) return null;
+  if (emp && emp.isActive) {
+    const user: SlackAuthUser = {
+      employeeId: emp.id,
+      role: (emp.accessRole as AccessRole) || "viewer",
+      name: emp.name,
+    };
+    slackAuthCache.set(slackUserId, { user, cachedAt: Date.now() });
+    return user;
+  }
 
-  const user: SlackAuthUser = {
-    employeeId: emp.id,
-    role: (emp.accessRole as AccessRole) || "viewer",
-    name: emp.name,
-  };
-  slackAuthCache.set(slackUserId, { user, cachedAt: Date.now() });
-  return user;
+  // Auto-link: fetch Slack profile and match by email or name
+  if (slackApp) {
+    try {
+      const slackProfile = await slackApp.client.users.info({ user: slackUserId });
+      const email = slackProfile.user?.profile?.email;
+      const realName = slackProfile.user?.real_name || slackProfile.user?.name;
+      const slackUsername = slackProfile.user?.name ?? null;
+
+      // Try email match first, then name match
+      let matched: typeof emp | undefined;
+      if (email) {
+        const [byEmail] = await db.select({ id: employees.id, name: employees.name, accessRole: employees.accessRole, isActive: employees.isActive })
+          .from(employees).where(and(eq(employees.email, email), eq(employees.isActive, true))).limit(1);
+        if (!byEmail && email) {
+          const [byGoogleEmail] = await db.select({ id: employees.id, name: employees.name, accessRole: employees.accessRole, isActive: employees.isActive })
+            .from(employees).where(and(sql`${employees.googleEmail} = ${email}`, eq(employees.isActive, true))).limit(1);
+          matched = byGoogleEmail;
+        } else {
+          matched = byEmail;
+        }
+      }
+      if (!matched && realName) {
+        const [byName] = await db.select({ id: employees.id, name: employees.name, accessRole: employees.accessRole, isActive: employees.isActive })
+          .from(employees).where(and(sql`${employees.name} ILIKE ${realName}`, eq(employees.isActive, true))).limit(1);
+        matched = byName;
+      }
+
+      if (matched) {
+        // Link Slack ID to employee
+        await db.update(employees).set({
+          slackMemberId: slackUserId,
+          slackUsername,
+          updatedAt: new Date(),
+        }).where(eq(employees.id, matched.id));
+
+        logger.info({ slackUserId, employeeName: matched.name, email, realName }, "Auto-linked Slack user to employee");
+
+        const user: SlackAuthUser = {
+          employeeId: matched.id,
+          role: (matched.accessRole as AccessRole) || "viewer",
+          name: matched.name,
+        };
+        slackAuthCache.set(slackUserId, { user, cachedAt: Date.now() });
+        return user;
+      }
+    } catch (err) {
+      logger.debug({ err, slackUserId }, "Failed to auto-link Slack user");
+    }
+  }
+
+  return null;
 }
 
 async function handleSlackQuery(text: string, slackUserId: string, say: (msg: any) => Promise<any>, threadTs?: string): Promise<void> {
