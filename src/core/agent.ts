@@ -5,7 +5,7 @@ import { db } from "../models/database.js";
 import { clients, dailyReports, employees, messageLogs, tasks } from "../models/schema.js";
 import { logger } from "../utils/logger.js";
 import { getTodayEvents } from "../services/calendar-sync.js";
-import { getUnreadImportantEmails, sendEmail } from "../services/email-manager.js";
+import { getUnreadImportantEmails, sendEmail, searchEmails, forwardEmail, replyToEmail } from "../services/email-manager.js";
 import { getNotionWorkspaceSummary, isNotionConfigured, createNotionTask, searchNotion } from "../services/notion-sync.js";
 import { parseDateKeywords, findEmployeeInQuery, getActivityByDateRange, getEmployeeActivity } from "../services/history-query.js";
 import { listDriveFiles, searchDriveFiles, uploadFileToDrive } from "../services/drive-manager.js";
@@ -672,6 +672,45 @@ ${JSON.stringify(data, null, 2)}`;
         required: ["query"],
       },
     },
+    {
+      name: "forward_email",
+      description: "Forward an email (with attachments) to someone. First use search_emails to find the email, then forward it by ID.",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          email_query: { type: "string", description: "Search query to find the email (subject, sender, keywords)" },
+          to: { type: "string", description: "Recipient email address" },
+          to_name: { type: "string", description: "Recipient name (resolves email from employees table)" },
+          note: { type: "string", description: "Optional note to add at the top of the forwarded email" },
+        },
+        required: [],
+      },
+    },
+    {
+      name: "reply_email",
+      description: "Reply or reply-all to an email. First use search_emails to find the email, then reply by ID.",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          email_query: { type: "string", description: "Search query to find the email to reply to" },
+          body: { type: "string", description: "Reply text" },
+          reply_all: { type: "boolean", description: "Reply to all recipients (default: false)" },
+        },
+        required: ["body"],
+      },
+    },
+    {
+      name: "search_emails",
+      description: "Search Gmail for emails matching a query. Returns email IDs, subjects, senders, and snippets. Use Gmail search syntax (from:, subject:, has:attachment, etc).",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          query: { type: "string", description: "Gmail search query" },
+          max_results: { type: "number", description: "Max results (default: 5)" },
+        },
+        required: ["query"],
+      },
+    },
   ];
 
   // --- Execute a tool call ---
@@ -1318,6 +1357,47 @@ Genera 5-10 task concreti e actionable.`,
         const results = await unifiedSearch(input.query, { source: sourceFilter, authOverride: userAuth });
         if (!results.length) return `Nessun risultato trovato per "${input.query}".`;
         return results.map((r) => `[${r.source}] ${r.title}\n  ${r.snippet}${r.url ? `\n  ${r.url}` : ""}`).join("\n\n");
+      }
+
+      if (name === "search_emails") {
+        const results = await searchEmails(input.query, input.max_results ?? 5, userAuth);
+        if (!results.length) return `Nessuna email trovata per "${input.query}".`;
+        return results.map((e) => `ID: ${e.id}\nDa: ${e.from}\nOggetto: ${e.subject}\nData: ${e.date}\n${e.snippet}`).join("\n---\n");
+      }
+
+      if (name === "forward_email") {
+        // Resolve recipient email
+        let to = input.to;
+        if (!to && input.to_name) {
+          const [emp] = await db.select({ email: employees.email, googleEmail: employees.googleEmail })
+            .from(employees)
+            .where(sql`${employees.name} ILIKE ${"%" + input.to_name + "%"}`)
+            .limit(1);
+          to = emp?.email ?? emp?.googleEmail;
+          if (!to) return `Employee "${input.to_name}" non trovato o senza email.`;
+        }
+        if (!to) return "Specifica un destinatario (to o to_name).";
+
+        // Find the email
+        if (!input.email_query) return "Specifica email_query per trovare l'email da inoltrare.";
+        const emails = await searchEmails(input.email_query, 1, userAuth);
+        if (!emails.length) return `Nessuna email trovata per "${input.email_query}".`;
+
+        const sent = await forwardEmail(emails[0].id, to, input.note, userAuth);
+        return sent
+          ? `Email "${emails[0].subject}" inoltrata a ${to}.`
+          : `Errore nell'inoltro dell'email.`;
+      }
+
+      if (name === "reply_email") {
+        if (!input.email_query) return "Specifica email_query per trovare l'email a cui rispondere.";
+        const emails = await searchEmails(input.email_query, 1, userAuth);
+        if (!emails.length) return `Nessuna email trovata per "${input.email_query}".`;
+
+        const sent = await replyToEmail(emails[0].id, input.body, input.reply_all ?? false, userAuth);
+        return sent
+          ? `Risposta inviata a "${emails[0].subject}"${input.reply_all ? " (reply all)" : ""}.`
+          : `Errore nella risposta all'email.`;
       }
 
       return `Tool "${name}" non riconosciuto.`;

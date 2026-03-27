@@ -38,6 +38,11 @@ export const TOOL_PERMISSIONS: Record<string, AccessRole[]> = {
   create_google_doc: ["owner", "admin"],
   unified_search: ["owner", "admin"],
 
+  // EMAIL: forward, reply, search
+  forward_email: ["owner", "admin"],
+  reply_email: ["owner", "admin"],
+  search_emails: ["owner", "admin"],
+
   // SENSITIVE: strategic analytics (owner only)
   get_team_sentiment: ["owner"],
   get_communication_patterns: ["owner"],
