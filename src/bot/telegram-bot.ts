@@ -23,7 +23,7 @@ import {
 } from "./commands.js";
 import { registerCallbacks } from "./callbacks.js";
 import { authMiddleware, requireRole } from "./auth.js";
-import { handleOAuthCode, handleConnectGoogle, handleConnectGoogleCode } from "./onboarding.js";
+import { handleOAuthCode, handleConnectGoogle, handleConnectGoogleCode, handleDisconnectGoogle } from "./onboarding.js";
 import { logger } from "../utils/logger.js";
 
 export function createBot(): Bot {
@@ -48,6 +48,7 @@ export function createBot(): Bot {
     { command: "monitor", description: "Configure Telegram monitoring" },
     { command: "slack", description: "Configure Slack monitoring" },
     { command: "connect_google", description: "Connect/reconnect Google account" },
+    { command: "disconnect_google", description: "Disconnect Google account" },
     { command: "help", description: "Show all commands" },
   ]).catch((err) => logger.warn({ err }, "Failed to set bot commands menu"));
 
@@ -73,8 +74,9 @@ export function createBot(): Bot {
   bot.command("slack_summary", adminGuard, slackSummaryCommand);
   bot.command("remind", adminGuard, remindCommand);
 
-  // Google OAuth connect/reconnect (any authenticated user)
+  // Google OAuth connect/reconnect/disconnect (any authenticated user)
   bot.command("connect_google", handleConnectGoogle);
+  bot.command("disconnect_google", handleDisconnectGoogle);
 
   // Commands for owner only
   const ownerGuard = requireRole("owner");

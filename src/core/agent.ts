@@ -15,7 +15,8 @@ import { generateDailyReportPdf, generateEmployeeReportPdf, generateWeeklyReport
 import { sendSlackMessage } from "../bot/slack-monitor.js";
 import { getTeamWorkload } from "../services/workload-tracker.js";
 import { getTeamCapacity, suggestAssignment } from "../services/capacity-planner.js";
-import { rescheduleTask } from "../services/auto-scheduler.js";
+import { rescheduleTask, unscheduleTask } from "../services/auto-scheduler.js";
+import { deleteCalendarEvent } from "../services/calendar-sync.js";
 import { createGoogleTask, completeGoogleTask, updateGoogleTask, deleteGoogleTask } from "../services/google-tasks-sync.js";
 import { getProjectETA } from "../services/project-eta.js";
 import { addNotionComment, createNotionProject, updateNotionTaskProperties } from "../services/notion-sync.js";
@@ -639,6 +640,29 @@ ${JSON.stringify(data, null, 2)}`;
         required: ["description"],
       },
     },
+    {
+      name: "delete_calendar_event",
+      description: "Delete/cancel a calendar event. Use when user wants to remove a meeting or event from the calendar. Can search by name if no ID is provided.",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          event_id: { type: "string", description: "Google Calendar event ID (if known)" },
+          event_summary: { type: "string", description: "Event title/name to search for and delete" },
+        },
+        required: [],
+      },
+    },
+    {
+      name: "unschedule_task",
+      description: "Remove a task's scheduled calendar event. The task stays active but is no longer on the calendar. Use when user wants to deschedule/unschedule a task.",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          task_title: { type: "string", description: "Task title or keyword to match" },
+        },
+        required: ["task_title"],
+      },
+    },
   ];
 
   // --- Execute a tool call ---
@@ -1228,6 +1252,34 @@ Genera 5-10 task concreti e actionable.`,
         }
 
         return `Progetto creato con ${created.length} task:\n${created.join("\n")}${input.deadline ? `\nDeadline: ${input.deadline}` : ""}`;
+      }
+
+      if (name === "delete_calendar_event") {
+        if (input.event_id) {
+          const deleted = await deleteCalendarEvent(input.event_id, userAuth);
+          return deleted
+            ? `Evento calendario eliminato.`
+            : `Impossibile eliminare l'evento (potrebbe essere gia' stato rimosso).`;
+        }
+        if (input.event_summary) {
+          const events = await getTodayEvents(userAuth);
+          const match = events.find((e) => e.summary.toLowerCase().includes(input.event_summary.toLowerCase()));
+          if (!match) return `Nessun evento trovato con nome "${input.event_summary}" nel calendario di oggi.`;
+          const deleted = await deleteCalendarEvent(match.id, userAuth);
+          return deleted
+            ? `Evento "${match.summary}" eliminato dal calendario.`
+            : `Impossibile eliminare "${match.summary}".`;
+        }
+        return "Specifica event_id o event_summary per eliminare un evento.";
+      }
+
+      if (name === "unschedule_task") {
+        const [task] = await db.select().from(tasks)
+          .where(sql`${tasks.title} ILIKE ${"%" + input.task_title + "%"}`).limit(1);
+        if (!task) return `Task "${input.task_title}" non trovato.`;
+        if (!task.autoScheduled && !task.calendarEventId) return `Task "${task.title}" non e' schedulato nel calendario.`;
+        await unscheduleTask(task.id);
+        return `Task "${task.title}" rimosso dal calendario.`;
       }
 
       return `Tool "${name}" non riconosciuto.`;

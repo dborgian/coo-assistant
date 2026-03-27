@@ -30,6 +30,10 @@ export const TOOL_PERMISSIONS: Record<string, AccessRole[]> = {
   create_notion_project: ["owner", "admin"],
   generate_report_pdf: ["owner", "admin"],
 
+  // CALENDAR MANAGEMENT: modify calendar
+  delete_calendar_event: ["owner", "admin"],
+  unschedule_task: ["owner", "admin"],
+
   // SENSITIVE: strategic analytics (owner only)
   get_team_sentiment: ["owner"],
   get_communication_patterns: ["owner"],

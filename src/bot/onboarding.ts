@@ -361,6 +361,47 @@ export async function handleOAuthCallback(
   }
 }
 
+export async function handleDisconnectGoogle(ctx: Context): Promise<void> {
+  const telegramId = ctx.from?.id;
+  if (!telegramId) return;
+
+  const [emp] = await db
+    .select({ id: employees.id, googleRefreshToken: employees.googleRefreshToken })
+    .from(employees)
+    .where(eq(employees.telegramUserId, telegramId))
+    .limit(1);
+
+  if (!emp) {
+    await ctx.reply("Non sei registrato nel sistema.");
+    return;
+  }
+
+  if (!emp.googleRefreshToken) {
+    await ctx.reply("Nessun account Google collegato.");
+    return;
+  }
+
+  // Revoke token with Google
+  try {
+    await fetch(`https://oauth2.googleapis.com/revoke?token=${emp.googleRefreshToken}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    });
+  } catch {
+    // Best-effort revocation — continue even if it fails
+  }
+
+  await db
+    .update(employees)
+    .set({ googleRefreshToken: null, updatedAt: new Date() })
+    .where(eq(employees.id, emp.id));
+
+  clearAuthCache();
+
+  await ctx.reply("Account Google disconnesso. Usa /connect_google per ricollegarlo.");
+  logger.info({ telegramId }, "User disconnected Google account");
+}
+
 async function createEmployee(
   ctx: Context,
   extra?: { name?: string; email?: string; googleRefreshToken?: string },

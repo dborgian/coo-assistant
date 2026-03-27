@@ -55,6 +55,7 @@ async function getCalendarBusySlots(startDate: Date, endDate: Date, calendarId: 
       timeMax: endDate.toISOString(),
       singleEvents: true,
       orderBy: "startTime",
+      timeZone: config.TIMEZONE,
     });
 
     return (res.data.items ?? [])
@@ -148,8 +149,8 @@ async function createCalendarEvent(
       calendarId,
       requestBody: {
         summary: `[COO] ${title}`,
-        start: { dateTime: start.toISOString() },
-        end: { dateTime: end.toISOString() },
+        start: { dateTime: start.toISOString(), timeZone: config.TIMEZONE },
+        end: { dateTime: end.toISOString(), timeZone: config.TIMEZONE },
         colorId: "9", // Blueberry
         description: "Auto-scheduled by COO Assistant",
       },

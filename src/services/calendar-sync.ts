@@ -5,6 +5,24 @@ import { getGoogleAuth, isGoogleConfigured } from "../core/google-auth.js";
 import type { GoogleAuth } from "../core/google-auth.js";
 import { logger } from "../utils/logger.js";
 
+export async function deleteCalendarEvent(
+  eventId: string,
+  authOverride?: GoogleAuth | null,
+  calendarId = "primary",
+): Promise<boolean> {
+  const auth = authOverride ?? getGoogleAuth();
+  if (!auth) return false;
+
+  const calendar = google.calendar({ version: "v3", auth });
+  try {
+    await calendar.events.delete({ calendarId, eventId });
+    return true;
+  } catch (err) {
+    logger.debug({ err, eventId }, "Failed to delete calendar event (may already be deleted)");
+    return false;
+  }
+}
+
 export interface CalendarEvent {
   id: string;
   summary: string;
@@ -34,6 +52,7 @@ export async function getTodayEvents(authOverride?: GoogleAuth | null): Promise<
       timeMax: endOfDay.toISOString(),
       singleEvents: true,
       orderBy: "startTime",
+      timeZone: config.TIMEZONE,
     });
 
     return (res.data.items ?? []).map((e) => ({

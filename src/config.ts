@@ -62,7 +62,7 @@ const envSchema = z.object({
   // Scheduling
   DAILY_REPORT_HOUR: z.coerce.number().default(8),
   DAILY_REPORT_MINUTE: z.coerce.number().default(0),
-  TIMEZONE: z.string().default("America/New_York"),
+  TIMEZONE: z.string().default("Europe/Rome"),
   CHAT_CHECK_INTERVAL_MINUTES: z.coerce.number().default(5),
   CALENDAR_CHECK_INTERVAL_MINUTES: z.coerce.number().default(15),
 });
