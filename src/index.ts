@@ -29,6 +29,7 @@ import { extractDailyTopics } from "./services/topic-analyzer.js";
 import { detectMeetingOverload } from "./services/meeting-intelligence.js";
 import { startUserbot, stopUserbot } from "./bot/monitors.js";
 import { startSlackMonitor, stopSlackMonitor } from "./bot/slack-monitor.js";
+import { handleOAuthCallback } from "./bot/onboarding.js";
 import { logger } from "./utils/logger.js";
 
 async function main(): Promise<void> {
@@ -85,13 +86,41 @@ async function main(): Promise<void> {
     logger.info("Slack monitoring active");
   }
 
-  // Health check endpoint for Railway
+  // HTTP server: health check + OAuth callback
   const port = process.env.PORT || 3000;
-  createServer((_, res) => {
+  createServer(async (req, res) => {
+    const url = new URL(req.url || "/", `http://localhost:${port}`);
+
+    if (url.pathname === "/oauth/callback") {
+      const code = url.searchParams.get("code");
+      const state = url.searchParams.get("state");
+      const error = url.searchParams.get("error");
+
+      if (error) {
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(`<html><body style="font-family:sans-serif;text-align:center;padding:60px"><h1>Autorizzazione annullata</h1><p>${error}</p><p>Puoi chiudere questa pagina.</p></body></html>`);
+        return;
+      }
+
+      if (!code || !state) {
+        res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(`<html><body style="font-family:sans-serif;text-align:center;padding:60px"><h1>Parametri mancanti</h1><p>Riprova dal bot Telegram.</p></body></html>`);
+        return;
+      }
+
+      const result = await handleOAuthCallback(code, state, bot);
+      const status = result.ok ? 200 : 400;
+      const icon = result.ok ? "&#10004;" : "&#10008;";
+      res.writeHead(status, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(`<html><body style="font-family:sans-serif;text-align:center;padding:60px"><h1>${icon} ${result.message}</h1><p>Puoi chiudere questa pagina e tornare a Telegram.</p></body></html>`);
+      return;
+    }
+
+    // Health check
     res.writeHead(200, { "Content-Type": "text/plain" });
     res.end("ok");
   }).listen(Number(port), () => {
-    logger.info({ port }, "Health check server listening");
+    logger.info({ port }, "HTTP server listening (health + OAuth callback)");
   });
 
   // Graceful shutdown

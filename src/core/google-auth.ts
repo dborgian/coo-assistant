@@ -38,12 +38,13 @@ export function isGoogleConfigured(): boolean {
   return !!(config.GOOGLE_CLIENT_ID && config.GOOGLE_REFRESH_TOKEN);
 }
 
-export function getAuthUrl(): string {
+export function getAuthUrl(state?: string): string {
   const client = createOAuth2Client();
   return client.generateAuthUrl({
     access_type: "offline",
     scope: SCOPES,
     prompt: "consent",
+    ...(state ? { state } : {}),
   });
 }
 
