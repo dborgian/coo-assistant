@@ -9,6 +9,17 @@ import { getAuthUrl, exchangeCode } from "../core/google-auth.js";
 import { isGoogleConfigured } from "../core/google-auth.js";
 import { clearAuthCache } from "./auth.js";
 
+/** Fetch the user's Google Calendar timezone setting */
+async function getCalendarTimezone(auth: InstanceType<typeof google.auth.OAuth2>): Promise<string | null> {
+  try {
+    const calendar = google.calendar({ version: "v3", auth });
+    const res = await calendar.settings.get({ setting: "timezone" });
+    return res.data.value ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // Track users awaiting OAuth code paste
 const pendingOAuth = new Map<number, { createdAt: number }>();
 const PENDING_TTL_MS = 10 * 60 * 1000; // 10 minutes
@@ -108,6 +119,7 @@ export async function handleOAuthCode(ctx: Context): Promise<boolean> {
 
     const oauth2 = google.oauth2({ version: "v2", auth: oauth2Client });
     const { data: profile } = await oauth2.userinfo.get();
+    const timezone = await getCalendarTimezone(oauth2Client);
 
     const name = profile.name || ctx.from?.first_name || "Utente";
     const email = profile.email ?? undefined;
@@ -130,13 +142,14 @@ export async function handleOAuthCode(ctx: Context): Promise<boolean> {
             telegramUserId: telegramId,
             telegramUsername: username,
             googleRefreshToken: tokens.refresh_token,
+            timezone,
             updatedAt: new Date(),
           })
           .where(eq(employees.id, existing.id));
         matched = true;
 
         logger.info(
-          { telegramId, email, employeeId: existing.id },
+          { telegramId, email, employeeId: existing.id, timezone },
           "Linked existing employee to Telegram user via email match",
         );
       }
@@ -147,6 +160,7 @@ export async function handleOAuthCode(ctx: Context): Promise<boolean> {
         name,
         email,
         googleRefreshToken: tokens.refresh_token,
+        timezone,
       });
     }
 
@@ -227,10 +241,15 @@ export async function handleConnectGoogleCode(ctx: Context): Promise<boolean> {
       return true;
     }
 
+    // Fetch timezone from Google Calendar
+    const reconnectAuth = new google.auth.OAuth2(config.GOOGLE_CLIENT_ID, config.GOOGLE_CLIENT_SECRET, config.GOOGLE_REDIRECT_URI);
+    reconnectAuth.setCredentials(tokens);
+    const timezone = await getCalendarTimezone(reconnectAuth);
+
     // Update existing employee record
     await db
       .update(employees)
-      .set({ googleRefreshToken: tokens.refresh_token, updatedAt: new Date() })
+      .set({ googleRefreshToken: tokens.refresh_token, timezone, updatedAt: new Date() })
       .where(eq(employees.telegramUserId, telegramId));
 
     pendingOAuth.delete(telegramId);
@@ -284,6 +303,7 @@ export async function handleOAuthCallback(
     oauth2Client.setCredentials(tokens);
     const oauth2 = google.oauth2({ version: "v2", auth: oauth2Client });
     const { data: profile } = await oauth2.userinfo.get();
+    const timezone = await getCalendarTimezone(oauth2Client);
 
     const name = profile.name || "Utente";
     const email = profile.email ?? undefined;
@@ -303,11 +323,12 @@ export async function handleOAuthCallback(
           .set({
             telegramUserId: telegramId,
             googleRefreshToken: tokens.refresh_token,
+            timezone,
             updatedAt: new Date(),
           })
           .where(eq(employees.id, existing.id));
         matched = true;
-        logger.info({ telegramId, email, employeeId: existing.id }, "OAuth callback: linked existing employee");
+        logger.info({ telegramId, email, employeeId: existing.id, timezone }, "OAuth callback: linked existing employee");
       }
     }
 
@@ -322,10 +343,10 @@ export async function handleOAuthCallback(
       if (existingByTg) {
         await db
           .update(employees)
-          .set({ googleRefreshToken: tokens.refresh_token, updatedAt: new Date() })
+          .set({ googleRefreshToken: tokens.refresh_token, timezone, updatedAt: new Date() })
           .where(eq(employees.id, existingByTg.id));
         matched = true;
-        logger.info({ telegramId }, "OAuth callback: reconnected Google for existing employee");
+        logger.info({ telegramId, timezone }, "OAuth callback: reconnected Google for existing employee");
       } else {
         await db.insert(employees).values({
           name,
@@ -333,9 +354,10 @@ export async function handleOAuthCallback(
           telegramUserId: telegramId,
           accessRole: "viewer",
           googleRefreshToken: tokens.refresh_token,
+          timezone,
           isActive: true,
         });
-        logger.info({ telegramId, email, name }, "OAuth callback: created new employee");
+        logger.info({ telegramId, email, name, timezone }, "OAuth callback: created new employee");
       }
     }
 
@@ -404,7 +426,7 @@ export async function handleDisconnectGoogle(ctx: Context): Promise<void> {
 
 async function createEmployee(
   ctx: Context,
-  extra?: { name?: string; email?: string; googleRefreshToken?: string },
+  extra?: { name?: string; email?: string; googleRefreshToken?: string; timezone?: string | null },
 ): Promise<void> {
   const telegramId = ctx.from!.id;
   const username = ctx.from?.username ?? null;
@@ -416,6 +438,7 @@ async function createEmployee(
     telegramUsername: username,
     accessRole: "viewer",
     googleRefreshToken: extra?.googleRefreshToken ?? null,
+    timezone: extra?.timezone ?? null,
     isActive: true,
   });
 }
