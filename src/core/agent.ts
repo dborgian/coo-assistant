@@ -14,6 +14,7 @@ import { sendSlackMessage } from "../bot/slack-monitor.js";
 import { getTeamWorkload } from "../services/workload-tracker.js";
 import { getTeamCapacity, suggestAssignment } from "../services/capacity-planner.js";
 import { rescheduleTask } from "../services/auto-scheduler.js";
+import { createGoogleTask, completeGoogleTask, updateGoogleTask, deleteGoogleTask } from "../services/google-tasks-sync.js";
 import { getProjectETA } from "../services/project-eta.js";
 import { addNotionComment, createNotionProject, updateNotionTaskProperties } from "../services/notion-sync.js";
 import { getCommitments } from "../services/commitment-tracker.js";
@@ -649,7 +650,7 @@ ${JSON.stringify(data, null, 2)}`;
           assignedTo = emp?.id ?? null;
         }
 
-        await db.insert(tasks).values({
+        const [newTask] = await db.insert(tasks).values({
           title: input.title,
           description: input.description ?? null,
           priority: input.priority ?? "medium",
@@ -657,7 +658,12 @@ ${JSON.stringify(data, null, 2)}`;
           dueDate: input.due_date ? parseLocalDate(input.due_date) : null,
           source: "ai",
           status: "pending",
-        });
+        }).returning({ id: tasks.id });
+
+        // Sync to Google Tasks
+        if (newTask) {
+          createGoogleTask(newTask.id).catch(() => {});
+        }
 
         // Also notify on Slack if configured
         if (config.SLACK_NOTIFICATIONS_CHANNEL) {
@@ -690,6 +696,11 @@ ${JSON.stringify(data, null, 2)}`;
           .where(sql`${tasks.title} ILIKE ${"%" + input.task_title + "%"}`).limit(1);
         if (!task) return `Task "${input.task_title}" non trovato.`;
         await db.update(tasks).set({ status: input.new_status, updatedAt: new Date() }).where(eq(tasks.id, task.id));
+
+        // Sync status to Google Tasks
+        if (input.new_status === "done" || input.new_status === "cancelled") {
+          completeGoogleTask(task.id).catch(() => {});
+        }
 
         // Check if completing this task unblocks others
         let unblockMsg = "";
@@ -878,6 +889,7 @@ ${JSON.stringify(data, null, 2)}`;
         const task = matchingTasks[0];
 
         if (input.action === "delete") {
+          deleteGoogleTask(task.id).catch(() => {});
           await db.delete(tasks).where(eq(tasks.id, task.id));
           return `Task "${task.title}" eliminato.`;
         }
@@ -894,6 +906,14 @@ ${JSON.stringify(data, null, 2)}`;
           else return `Employee "${input.new_assigned_to}" non trovato. Task non modificato.`;
         }
         await db.update(tasks).set(updates).where(eq(tasks.id, task.id));
+        // Sync changes to Google Tasks
+        if (input.new_title || input.new_description || input.new_due_date) {
+          updateGoogleTask(task.id, {
+            title: input.new_title,
+            description: input.new_description,
+            dueDate: input.new_due_date ? parseLocalDate(input.new_due_date) : undefined,
+          }).catch(() => {});
+        }
         // Trigger reschedule if priority or deadline changed and task was scheduled
         if ((input.new_priority || input.new_due_date) && task.autoScheduled) {
           await rescheduleTask(task.id).catch(() => {});

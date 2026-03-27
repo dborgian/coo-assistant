@@ -64,6 +64,7 @@ export const tasks = pgTable("tasks", {
   scheduledEnd: timestamp("scheduled_end", { withTimezone: true }),
   autoScheduled: boolean("auto_scheduled").default(false),
   calendarEventId: text("calendar_event_id"), // Google Calendar event ID
+  googleTaskId: text("google_task_id"), // Google Tasks ID
   // Dependencies
   blockedBy: text("blocked_by"), // JSON array of task IDs
   // Escalation tracking
