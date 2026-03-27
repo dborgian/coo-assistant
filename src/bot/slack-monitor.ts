@@ -1,10 +1,10 @@
 import { App as SlackApp } from "@slack/bolt";
 import type { Bot } from "grammy";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, gte, sql } from "drizzle-orm";
 import { agent } from "../core/agent.js";
 import { config } from "../config.js";
 import { db } from "../models/database.js";
-import { employees, messageLogs, tasks } from "../models/schema.js";
+import { clients, employees, intelligenceEvents, messageLogs, tasks } from "../models/schema.js";
 import { runInlineExtractors } from "../services/intelligence-pipeline.js";
 import { logger } from "../utils/logger.js";
 import type { AccessRole } from "./auth.js";
@@ -279,6 +279,74 @@ async function handleSlackMessage(
       );
     } catch (err) {
       logger.error({ err }, "Failed to notify owner about Slack message");
+    }
+  }
+
+  // Phase 6: Contextual proactive participation (fire-and-forget)
+  checkProactiveIntervention(channelId, channelName, messageText, threadTs, messageTs).catch(() => {});
+}
+
+/**
+ * Check if the bot should proactively intervene in a conversation.
+ * Triggers: client mention with open tasks, question matching knowledge base.
+ */
+async function checkProactiveIntervention(
+  channelId: string,
+  channelName: string,
+  messageText: string,
+  threadTs?: string,
+  messageTs?: string,
+): Promise<void> {
+  if (!slackApp) return;
+
+  // 1. Client mention — surface open tasks and project status
+  const allClients = await db.select({ name: clients.name, id: clients.id }).from(clients).where(eq(clients.isActive, true));
+  for (const client of allClients) {
+    if (messageText.toLowerCase().includes(client.name.toLowerCase()) && client.name.length > 2) {
+      const openTasks = await db.select({ title: tasks.title, status: tasks.status, priority: tasks.priority, dueDate: tasks.dueDate })
+        .from(tasks)
+        .where(and(eq(tasks.clientId, client.id), sql`${tasks.status} IN ('pending', 'in_progress')`));
+
+      if (openTasks.length) {
+        const taskList = openTasks.slice(0, 5).map((t) => `- ${t.title} (${t.status}, ${t.priority}${t.dueDate ? `, scade ${new Date(t.dueDate).toLocaleDateString("it-IT")}` : ""})`).join("\n");
+        await slackApp.client.chat.postMessage({
+          channel: channelId,
+          thread_ts: threadTs ?? messageTs,
+          text: `Ho notato che si parla di *${client.name}*. Ci sono ${openTasks.length} task attivi:\n${taskList}`,
+        }).catch(() => {});
+        logger.debug({ client: client.name, channel: channelName }, "Proactive: surfaced client tasks");
+      }
+      break; // Only surface for the first matched client
+    }
+  }
+
+  // 2. Question detection — surface relevant knowledge
+  const isQuestion = /\?$|\bcome\b|\bperche\b|\bquando\b|\bdove\b|\bchi\b|\bwhat\b|\bhow\b|\bwhy\b|\bwhen\b/i.test(messageText);
+  if (isQuestion && messageText.length > 20) {
+    const recentDecisions = await db.select({ content: intelligenceEvents.content, channel: intelligenceEvents.channel })
+      .from(intelligenceEvents)
+      .where(and(
+        eq(intelligenceEvents.type, "decision"),
+        eq(intelligenceEvents.status, "active"),
+        gte(intelligenceEvents.detectedAt, new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)),
+      ));
+
+    if (recentDecisions.length) {
+      // Simple keyword matching — find decisions related to the question
+      const words = messageText.toLowerCase().split(/\s+/).filter((w) => w.length > 3);
+      const relevant = recentDecisions.filter((d) =>
+        words.some((w) => d.content.toLowerCase().includes(w)),
+      );
+
+      if (relevant.length > 0 && relevant.length <= 3) {
+        const decisionList = relevant.map((d) => `- "${d.content.slice(0, 120)}" (${d.channel ?? "?"})`).join("\n");
+        await slackApp.client.chat.postMessage({
+          channel: channelId,
+          thread_ts: threadTs ?? messageTs,
+          text: `Potrebbe essere rilevante — decisioni recenti correlate:\n${decisionList}`,
+        }).catch(() => {});
+        logger.debug({ channel: channelName }, "Proactive: surfaced relevant decisions");
+      }
     }
   }
 }
