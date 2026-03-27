@@ -301,12 +301,13 @@ ${JSON.stringify(data, null, 2)}`;
     },
     {
       name: "send_slack_notification",
-      description: "Send a message to a Slack channel. Use this to notify team members about tasks, reminders, or important updates.",
+      description: "Send a message on Slack. Can send to a channel or DM a specific person. To DM someone, use their name in recipient_name.",
       input_schema: {
         type: "object" as const,
         properties: {
-          message: { type: "string", description: "The message to send to Slack" },
-          channel_id: { type: "string", description: "Slack channel ID (optional, uses default notifications channel if omitted)" },
+          message: { type: "string", description: "The message to send" },
+          channel_id: { type: "string", description: "Slack channel ID (optional)" },
+          recipient_name: { type: "string", description: "Employee name to DM directly (optional, uses their slackMemberId)" },
         },
         required: ["message"],
       },
@@ -730,10 +731,24 @@ ${JSON.stringify(data, null, 2)}`;
       }
 
       if (name === "send_slack_notification") {
-        const channelId = input.channel_id || config.SLACK_NOTIFICATIONS_CHANNEL;
+        let channelId = input.channel_id || config.SLACK_NOTIFICATIONS_CHANNEL;
+
+        // DM a specific person by name
+        if (input.recipient_name) {
+          const [emp] = await db.select({ slackMemberId: employees.slackMemberId, name: employees.name })
+            .from(employees)
+            .where(sql`${employees.name} ILIKE ${"%" + input.recipient_name + "%"}`)
+            .limit(1);
+          if (emp?.slackMemberId) {
+            channelId = emp.slackMemberId;
+          } else {
+            return `Employee "${input.recipient_name}" non trovato o non ha Slack collegato.`;
+          }
+        }
+
         if (!channelId) return "Slack notifications channel non configurato. Imposta SLACK_NOTIFICATIONS_CHANNEL nel .env.";
         const sent = await sendSlackMessage(channelId, input.message);
-        return sent ? "Messaggio inviato su Slack con successo." : "Invio fallito — controlla la configurazione Slack.";
+        return sent ? `Messaggio inviato su Slack${input.recipient_name ? ` a ${input.recipient_name}` : ""}.` : "Invio fallito — controlla la configurazione Slack.";
       }
 
       if (name === "send_email") {
