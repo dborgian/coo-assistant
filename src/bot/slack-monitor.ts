@@ -208,6 +208,8 @@ async function onSlackMessage(message: any, client: any): Promise<void> {
     channelName,
     message.text,
     message.user,
+    message.thread_ts ?? undefined,
+    message.ts,
   );
 }
 
@@ -217,6 +219,8 @@ async function handleSlackMessage(
   channelName: string,
   messageText: string,
   senderId?: string,
+  threadTs?: string,
+  messageTs?: string,
 ): Promise<void> {
   logger.info(
     {
@@ -234,7 +238,7 @@ async function handleSlackMessage(
     channelName,
   );
 
-  // Store with source="slack"
+  // Store with source="slack" (full content + thread awareness)
   const [insertedMsg] = await db.insert(messageLogs)
     .values({
       source: "slack",
@@ -242,6 +246,9 @@ async function handleSlackMessage(
       senderName,
       senderId: senderId ?? null,
       content: messageText.slice(0, 500),
+      fullContent: messageText.length > 500 ? messageText : null,
+      threadTs: threadTs ?? null,
+      messageTs: messageTs ?? null,
       urgency: classification.urgency,
       needsReply: classification.needs_reply,
     })

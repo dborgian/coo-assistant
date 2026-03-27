@@ -103,12 +103,17 @@ export const messageLogs = pgTable("message_logs", {
   notifiedOwner: boolean("notified_owner").default(false),
   analyzed: boolean("analyzed").default(false),
   sentiment: real("sentiment"),
+  // Thread awareness (Slack threads)
+  threadTs: text("thread_ts"),
+  messageTs: text("message_ts"),
+  fullContent: text("full_content"),
   receivedAt: timestamp("received_at", { withTimezone: true }).defaultNow(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
 }, (t) => [
   index("idx_msglogs_source_received").on(t.source, t.receivedAt),
   index("idx_msglogs_pending").on(t.needsReply, t.replied),
   index("idx_msglogs_employee").on(t.employeeId, t.receivedAt),
+  index("idx_msglogs_thread").on(t.threadTs),
 ]);
 
 export const employeeMetrics = pgTable("employee_metrics", {
