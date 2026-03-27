@@ -2,6 +2,7 @@ import { google } from "googleapis";
 import type { Bot } from "grammy";
 import { config } from "../config.js";
 import { getGoogleAuth, isGoogleConfigured } from "../core/google-auth.js";
+import type { GoogleAuth } from "../core/google-auth.js";
 import { logger } from "../utils/logger.js";
 
 export interface CalendarEvent {
@@ -14,8 +15,8 @@ export interface CalendarEvent {
   organizer?: string;
 }
 
-export async function getTodayEvents(): Promise<CalendarEvent[]> {
-  const auth = getGoogleAuth();
+export async function getTodayEvents(authOverride?: GoogleAuth | null): Promise<CalendarEvent[]> {
+  const auth = authOverride ?? getGoogleAuth();
   if (!auth) return [];
 
   const calendar = google.calendar({ version: "v3", auth });

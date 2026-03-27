@@ -9,6 +9,8 @@ import { getUnreadImportantEmails, sendEmail } from "../services/email-manager.j
 import { getNotionWorkspaceSummary, isNotionConfigured, createNotionTask, searchNotion } from "../services/notion-sync.js";
 import { parseDateKeywords, findEmployeeInQuery, getActivityByDateRange, getEmployeeActivity } from "../services/history-query.js";
 import { listDriveFiles, searchDriveFiles, uploadFileToDrive } from "../services/drive-manager.js";
+import { getAuthForEmployee } from "./google-auth.js";
+import type { GoogleAuth } from "./google-auth.js";
 import { generateDailyReportPdf, generateEmployeeReportPdf, generateWeeklyReportPdf, type DailyReportData } from "../services/pdf-generator.js";
 import { sendSlackMessage } from "../bot/slack-monitor.js";
 import { getTeamWorkload } from "../services/workload-tracker.js";
@@ -640,7 +642,7 @@ ${JSON.stringify(data, null, 2)}`;
   ];
 
   // --- Execute a tool call ---
-  private async executeTool(name: string, input: Record<string, any>): Promise<string> {
+  private async executeTool(name: string, input: Record<string, any>, userAuth?: GoogleAuth | null): Promise<string> {
     try {
       if (name === "create_task") {
         let assignedTo: string | null = null;
@@ -685,7 +687,7 @@ ${JSON.stringify(data, null, 2)}`;
       }
 
       if (name === "send_email") {
-        const sent = await sendEmail(input.to, input.subject, input.body);
+        const sent = await sendEmail(input.to, input.subject, input.body, userAuth);
         return sent
           ? `Email inviata a ${input.to} con oggetto "${input.subject}".`
           : `Invio email fallito a ${input.to} — verifica la configurazione Google (serve il scope gmail.send).`;
@@ -836,8 +838,8 @@ ${JSON.stringify(data, null, 2)}`;
       if (name === "search_drive") {
         const maxResults = input.max_results ?? 10;
         const files = input.query
-          ? await searchDriveFiles(input.query, maxResults)
-          : await listDriveFiles(maxResults);
+          ? await searchDriveFiles(input.query, maxResults, userAuth)
+          : await listDriveFiles(maxResults, userAuth);
         if (!files.length) return input.query ? `Nessun file trovato per "${input.query}" su Drive.` : "Nessun file nella cartella COO Drive.";
         return files.map((f) => `- ${f.name} (${f.createdTime ? new Date(f.createdTime).toLocaleDateString("it-IT") : ""}) — ${f.webViewLink}`).join("\n");
       }
@@ -922,7 +924,7 @@ ${JSON.stringify(data, null, 2)}`;
       }
 
       if (name === "get_calendar_events") {
-        const events = await getTodayEvents();
+        const events = await getTodayEvents(userAuth);
         if (!events.length) return "Nessun evento in calendario per oggi.";
         return events.map((e) => {
           const start = e.start ? new Date(e.start).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" }) : "TBD";
@@ -1239,6 +1241,7 @@ Genera 5-10 task concreti e actionable.`,
     query: string,
     role: AccessRole,
     employeeId: string | null,
+    userAuth?: GoogleAuth | null,
   ): Promise<Record<string, unknown>> {
     const context: Record<string, unknown> = {
       today: new Date().toISOString().split("T")[0],
@@ -1253,7 +1256,7 @@ Genera 5-10 task concreti e actionable.`,
       const [taskCountRow] = await db.select({ count: sql<number>`count(*)` }).from(tasks)
         .where(inArray(tasks.status, ["pending", "in_progress"]));
 
-      const calendarEvents = await getTodayEvents().catch(() => []);
+      const calendarEvents = await getTodayEvents(userAuth).catch(() => []);
 
       context.my_tasks = myTasks.map((t) => ({ id: t.id, title: t.title, status: t.status, priority: t.priority, due: t.dueDate }));
       context.total_active_tasks = taskCountRow?.count ?? 0;
@@ -1269,10 +1272,10 @@ Genera 5-10 task concreti e actionable.`,
     ]);
 
     const [calendarEvents, importantEmails, notionData, driveFiles] = await Promise.all([
-      getTodayEvents().catch(() => []),
-      getUnreadImportantEmails(5).catch(() => []),
+      getTodayEvents(userAuth).catch(() => []),
+      getUnreadImportantEmails(5, userAuth).catch(() => []),
       isNotionConfigured() ? getNotionWorkspaceSummary().catch(() => null) : Promise.resolve(null),
-      listDriveFiles(10).catch(() => []),
+      listDriveFiles(10, userAuth).catch(() => []),
     ]);
 
     const recentSlackMessages = await db.select().from(messageLogs)
@@ -1316,8 +1319,11 @@ Genera 5-10 task concreti e actionable.`,
   ): Promise<AgentResponse> {
     this.collectedFiles = [];
 
+    // Resolve per-user Google auth (falls back to global if no personal token)
+    const userAuth = await getAuthForEmployee(employeeId);
+
     // Build context based on role
-    const context = await this.buildContextForRole(query, userRole, employeeId);
+    const context = await this.buildContextForRole(query, userRole, employeeId, userAuth);
 
     // Filter tools based on role
     const allowedNames = getAllowedToolNames(userRole);
@@ -1361,7 +1367,7 @@ Genera 5-10 task concreti e actionable.`,
       for (const block of toolUseBlocks) {
         if (block.type === "tool_use") {
           logger.info({ tool: block.name, input: block.input }, "AI executing tool");
-          const result = await this.executeTool(block.name, block.input as Record<string, any>);
+          const result = await this.executeTool(block.name, block.input as Record<string, any>, userAuth);
           toolResults.push({ type: "tool_result", tool_use_id: block.id, content: result });
         }
       }

@@ -1,4 +1,5 @@
 import { google } from "googleapis";
+import { eq } from "drizzle-orm";
 import { config } from "../config.js";
 import { logger } from "../utils/logger.js";
 
@@ -62,4 +63,31 @@ export function getUserGoogleAuth(refreshToken: string) {
   const client = createOAuth2Client();
   client.setCredentials({ refresh_token: refreshToken });
   return client;
+}
+
+export type GoogleAuth = ReturnType<typeof createOAuth2Client>;
+
+/** Resolve the Google auth client for a specific employee, falling back to global */
+export async function getAuthForEmployee(employeeId: string | null): Promise<GoogleAuth | null> {
+  if (!employeeId) return getGoogleAuth();
+
+  try {
+    // Lazy import to avoid circular dependency
+    const { db } = await import("../models/database.js");
+    const { employees } = await import("../models/schema.js");
+
+    const [emp] = await db
+      .select({ googleRefreshToken: employees.googleRefreshToken })
+      .from(employees)
+      .where(eq(employees.id, employeeId))
+      .limit(1);
+
+    if (emp?.googleRefreshToken) {
+      return getUserGoogleAuth(emp.googleRefreshToken);
+    }
+  } catch (err) {
+    logger.error({ err, employeeId }, "Failed to resolve employee Google auth");
+  }
+
+  return getGoogleAuth();
 }

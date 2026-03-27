@@ -2,6 +2,7 @@ import { google } from "googleapis";
 import { Readable } from "node:stream";
 import { config } from "../config.js";
 import { getGoogleAuth, isGoogleConfigured } from "../core/google-auth.js";
+import type { GoogleAuth } from "../core/google-auth.js";
 import { logger } from "../utils/logger.js";
 
 export interface DriveFile {
@@ -13,8 +14,8 @@ export interface DriveFile {
   size: string;
 }
 
-function getDrive() {
-  const auth = getGoogleAuth();
+function getDrive(authOverride?: GoogleAuth | null) {
+  const auth = authOverride ?? getGoogleAuth();
   if (!auth) return null;
   return google.drive({ version: "v3", auth });
 }
@@ -67,10 +68,10 @@ export async function uploadFileToDrive(
   }
 }
 
-export async function listDriveFiles(maxResults = 10): Promise<DriveFile[]> {
+export async function listDriveFiles(maxResults = 10, authOverride?: GoogleAuth | null): Promise<DriveFile[]> {
   if (!isGoogleConfigured() || !config.COO_DRIVE_FOLDER_ID) return [];
 
-  const drive = getDrive();
+  const drive = getDrive(authOverride);
   if (!drive) return [];
 
   try {
@@ -97,10 +98,10 @@ export async function listDriveFiles(maxResults = 10): Promise<DriveFile[]> {
   }
 }
 
-export async function searchDriveFiles(query: string, maxResults = 10): Promise<DriveFile[]> {
+export async function searchDriveFiles(query: string, maxResults = 10, authOverride?: GoogleAuth | null): Promise<DriveFile[]> {
   if (!isGoogleConfigured() || !config.COO_DRIVE_FOLDER_ID) return [];
 
-  const drive = getDrive();
+  const drive = getDrive(authOverride);
   if (!drive) return [];
 
   try {

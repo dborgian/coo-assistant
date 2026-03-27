@@ -4,6 +4,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { agent } from "../core/agent.js";
 import { config } from "../config.js";
 import { getGoogleAuth, isGoogleConfigured } from "../core/google-auth.js";
+import type { GoogleAuth } from "../core/google-auth.js";
 import { db } from "../models/database.js";
 import { messageLogs } from "../models/schema.js";
 import { logger } from "../utils/logger.js";
@@ -16,8 +17,8 @@ export interface EmailSummary {
   date: string;
 }
 
-export async function getUnreadImportantEmails(maxResults = 10): Promise<EmailSummary[]> {
-  const auth = getGoogleAuth();
+export async function getUnreadImportantEmails(maxResults = 10, authOverride?: GoogleAuth | null): Promise<EmailSummary[]> {
+  const auth = authOverride ?? getGoogleAuth();
   if (!auth) return [];
 
   const gmail = google.gmail({ version: "v1", auth });
@@ -124,8 +125,9 @@ export async function sendEmail(
   to: string,
   subject: string,
   body: string,
+  authOverride?: GoogleAuth | null,
 ): Promise<boolean> {
-  const auth = getGoogleAuth();
+  const auth = authOverride ?? getGoogleAuth();
   if (!auth) {
     logger.warn("Cannot send email — Google not configured");
     return false;

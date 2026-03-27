@@ -1,14 +1,15 @@
 import { google } from "googleapis";
 import { eq } from "drizzle-orm";
 import { getGoogleAuth, isGoogleConfigured } from "../core/google-auth.js";
+import type { GoogleAuth } from "../core/google-auth.js";
 import { db } from "../models/database.js";
 import { tasks } from "../models/schema.js";
 import { logger } from "../utils/logger.js";
 
 const DEFAULT_TASK_LIST = "@default";
 
-function getTasksClient() {
-  const auth = getGoogleAuth();
+function getTasksClient(authOverride?: GoogleAuth | null) {
+  const auth = authOverride ?? getGoogleAuth();
   if (!auth) return null;
   return google.tasks({ version: "v1", auth });
 }
