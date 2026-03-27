@@ -804,6 +804,7 @@ export async function askCommand(ctx: Context): Promise<void> {
     query,
     user?.role ?? "viewer",
     user?.employeeId ?? null,
+    user?.name,
   );
 
   if (text.length > 4000) {

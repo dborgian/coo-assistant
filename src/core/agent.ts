@@ -38,35 +38,17 @@ export interface AgentResponse {
 }
 
 const COO_SYSTEM_PROMPT = `\
-Sei il Chief Operating Officer (COO) AI di una startup ad alte prestazioni.
+Sei il COO AI di una startup. Rispondi in modo CONCISO e DIRETTO.
 
-STILE DI COMUNICAZIONE:
-- Rispondi in linguaggio naturale e narrativo, come un COO che parla al founder
-- Racconta cosa succede in modo fluido, NON fare solo elenchi puntati
-- Dopo la narrativa, AGGIUNGI SEMPRE dei grafici visuali usando caratteri Unicode
-- Usa emoji per le sezioni e per rendere il messaggio visivamente chiaro su Telegram
+REGOLE DI STILE:
 - Rispondi nella lingua dell'utente (italiano o inglese)
-
-GRAFICI VISUALI (per Telegram):
-Dopo la narrativa, aggiungi una sezione METRICHE con tabelle pulite.
-Usa SOLO emoji standard e testo semplice per i grafici. NO box Unicode, NO caratteri speciali.
-
-Formato metriche:
-  📊 METRICHE
-  ━━━━━━━━━━━━━━━
-  📋 Task attivi: 5
-  ✅ Completati: 3
-  ⚠️ Overdue: 1
-  💬 Slack: 12 messaggi
-  📧 Email: 2 importanti
-  📅 Calendar: 3 eventi
-
-Per mostrare proporzioni usa emoji ripetuti:
-  Task: 🟢🟢🟢⚪⚪ 3/5 completati
-  Urgenza: 🔴🟡🟡🟢🟢
-
-NON usare box Unicode (┌─┐│└┘), NON usare blocchi (█░▓), NON usare % ripetuti.
-Tieni le metriche semplici, leggibili, una riga per dato.
+- Sii breve: rispondi alla domanda, poi fermati. Niente commenti extra.
+- NON aggiungere metriche, grafici o sezioni extra a meno che l'utente non le chieda esplicitamente
+- NON ripetere informazioni gia note all'utente
+- NON fare speculazioni o osservazioni non richieste
+- Quando esegui un'azione, conferma in UNA frase cosa hai fatto
+- Usa elenchi puntati solo se ci sono 3+ elementi
+- IMPORTANTE: il campo [Messaggio da: Nome] indica CHI sta parlando. Non confondere mittente e destinatario.
 
 RESPONSABILITA:
 - Monitorare tutti i canali (Slack, Telegram, Gmail, Calendar, Notion)
@@ -1424,6 +1406,7 @@ Genera 5-10 task concreti e actionable.`,
     query: string,
     userRole: AccessRole = "owner",
     employeeId: string | null = null,
+    userName?: string,
   ): Promise<AgentResponse> {
     this.collectedFiles = [];
 
@@ -1453,7 +1436,8 @@ Genera 5-10 task concreti e actionable.`,
         : "\n\nL'utente ha ruolo VIEWER. Puo' SOLO consultare i propri task e il calendario. NON puo' creare/modificare task, inviare messaggi, vedere email, slack, report, o dati di altri employee. Se chiede queste cose, rispondi che non ha i permessi.";
 
     // --- Tool use loop ---
-    const contextStr = `Context:\n\`\`\`json\n${JSON.stringify(context, null, 2)}\n\`\`\`\n\n${query}`;
+    const userInfo = userName ? `[Messaggio da: ${userName} (${userRole})]\n` : "";
+    const contextStr = `${userInfo}Context:\n\`\`\`json\n${JSON.stringify(context, null, 2)}\n\`\`\`\n\n${query}`;
 
     let messages: any[] = [{ role: "user", content: contextStr }];
     let textParts: string[] = [];

@@ -133,7 +133,7 @@ async function handleSlackQuery(
   }
 
   try {
-    const response = await agent.answerQuery(text, user.role, user.employeeId);
+    const response = await agent.answerQuery(text, user.role, user.employeeId, user.name);
     const reply = response.text || "Operazione completata.";
 
     // Split long messages (Slack limit ~4000 chars)
