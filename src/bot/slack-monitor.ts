@@ -4,9 +4,10 @@ import { eq, sql } from "drizzle-orm";
 import { agent } from "../core/agent.js";
 import { config } from "../config.js";
 import { db } from "../models/database.js";
-import { messageLogs, tasks } from "../models/schema.js";
+import { employees, messageLogs, tasks } from "../models/schema.js";
 import { runInlineExtractors } from "../services/intelligence-pipeline.js";
 import { logger } from "../utils/logger.js";
+import type { AccessRole } from "./auth.js";
 
 let slackApp: SlackApp | null = null;
 let botRef: Bot | null = null;
@@ -14,6 +15,56 @@ let botRef: Bot | null = null;
 // Cache user/channel names to avoid Slack API rate limits
 const userNameCache = new Map<string, string>();
 const channelNameCache = new Map<string, string>();
+
+// Cache Slack user → employee mapping (5-min TTL)
+interface SlackAuthUser { employeeId: string; role: AccessRole; name: string }
+const slackAuthCache = new Map<string, { user: SlackAuthUser; cachedAt: number }>();
+const SLACK_AUTH_TTL = 5 * 60 * 1000;
+
+async function resolveSlackUser(slackUserId: string): Promise<SlackAuthUser | null> {
+  const cached = slackAuthCache.get(slackUserId);
+  if (cached && Date.now() - cached.cachedAt < SLACK_AUTH_TTL) return cached.user;
+
+  const [emp] = await db
+    .select({ id: employees.id, name: employees.name, accessRole: employees.accessRole, isActive: employees.isActive })
+    .from(employees)
+    .where(eq(employees.slackMemberId, slackUserId))
+    .limit(1);
+
+  if (!emp || !emp.isActive) return null;
+
+  const user: SlackAuthUser = {
+    employeeId: emp.id,
+    role: (emp.accessRole as AccessRole) || "viewer",
+    name: emp.name,
+  };
+  slackAuthCache.set(slackUserId, { user, cachedAt: Date.now() });
+  return user;
+}
+
+async function handleSlackQuery(text: string, slackUserId: string, say: (msg: any) => Promise<any>, threadTs?: string): Promise<void> {
+  const user = await resolveSlackUser(slackUserId);
+  if (!user) {
+    await say({ text: "Non sei registrato nel sistema. Chiedi all'admin di aggiungere il tuo Slack Member ID.", ...(threadTs ? { thread_ts: threadTs } : {}) });
+    return;
+  }
+
+  logger.info({ slackUser: slackUserId, name: user.name, role: user.role, query: text.slice(0, 80) }, "Slack AI query");
+
+  try {
+    const response = await agent.answerQuery(text, user.role, user.employeeId);
+    const reply = response.text || "Operazione completata.";
+
+    // Split long messages (Slack limit ~4000 chars)
+    const chunks = reply.match(/[\s\S]{1,3900}/g) ?? [reply];
+    for (const chunk of chunks) {
+      await say({ text: chunk, ...(threadTs ? { thread_ts: threadTs } : {}) });
+    }
+  } catch (err) {
+    logger.error({ err, slackUser: slackUserId }, "Slack AI query failed");
+    await say({ text: "Errore nell'elaborazione della richiesta.", ...(threadTs ? { thread_ts: threadTs } : {}) });
+  }
+}
 
 export async function startSlackMonitor(bot: Bot): Promise<boolean> {
   botRef = bot;
@@ -30,8 +81,36 @@ export async function startSlackMonitor(bot: Bot): Promise<boolean> {
     socketMode: true,
   });
 
-  slackApp.message(async ({ message, client }) => {
+  // App mention handler: @COO-Assistant in channels
+  slackApp.event("app_mention", async ({ event, say }) => {
     try {
+      // Strip the mention tag to get the actual query
+      const text = (event.text || "").replace(/<@[A-Z0-9]+>/g, "").trim();
+      if (!event.user) return;
+      if (!text) {
+        await say({ text: "Ciao! Scrivimi una domanda dopo avermi menzionato.", thread_ts: event.ts });
+        return;
+      }
+      await handleSlackQuery(text, event.user, say, event.ts);
+    } catch (err) {
+      logger.error({ err }, "Error handling Slack app_mention");
+    }
+  });
+
+  // Message handler: monitors channels + handles DMs
+  slackApp.message(async ({ message, client, say }) => {
+    try {
+      // Handle DMs (direct messages to the bot)
+      if ((message as any).channel_type === "im" && !((message as any).bot_id) && (message as any).text?.trim()) {
+        const text = (message as any).text.trim();
+        const userId = (message as any).user;
+        if (userId) {
+          await handleSlackQuery(text, userId, say);
+          return;
+        }
+      }
+
+      // Regular channel monitoring (existing behavior)
       await onSlackMessage(message, client);
     } catch (err) {
       logger.error({ err }, "Error processing Slack message");
