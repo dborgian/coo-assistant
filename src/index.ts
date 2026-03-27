@@ -1,3 +1,4 @@
+import { createServer } from "node:http";
 import { createBot } from "./bot/telegram-bot.js";
 import { mcpManager } from "./core/mcp-client.js";
 import { setupSchedules, stopSchedules } from "./core/scheduler.js";
@@ -83,6 +84,15 @@ async function main(): Promise<void> {
   if (slackStarted) {
     logger.info("Slack monitoring active");
   }
+
+  // Health check endpoint for Railway
+  const port = process.env.PORT || 3000;
+  createServer((_, res) => {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end("ok");
+  }).listen(Number(port), () => {
+    logger.info({ port }, "Health check server listening");
+  });
 
   // Graceful shutdown
   const shutdown = async () => {
