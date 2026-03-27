@@ -12,7 +12,7 @@ import { listDriveFiles, searchDriveFiles, uploadFileToDrive } from "../services
 import { getAuthForEmployee } from "./google-auth.js";
 import type { GoogleAuth } from "./google-auth.js";
 import { generateDailyReportPdf, generateEmployeeReportPdf, generateWeeklyReportPdf, type DailyReportData } from "../services/pdf-generator.js";
-import { sendSlackMessage } from "../bot/slack-monitor.js";
+import { sendSlackMessage, getNotificationsChannel } from "../bot/slack-monitor.js";
 import { getTeamWorkload } from "../services/workload-tracker.js";
 import { getTeamCapacity, suggestAssignment } from "../services/capacity-planner.js";
 import { rescheduleTask, unscheduleTask } from "../services/auto-scheduler.js";
@@ -718,20 +718,21 @@ ${JSON.stringify(data, null, 2)}`;
           createGoogleTask(newTask.id).catch(() => {});
         }
 
-        // Also notify on Slack if configured
-        if (config.SLACK_NOTIFICATIONS_CHANNEL) {
+        // Also notify on Slack
+        const notifChannel = getNotificationsChannel();
+        if (notifChannel) {
           const assignee = input.assigned_to_name ? ` (assegnato a ${input.assigned_to_name})` : "";
           await sendSlackMessage(
-            config.SLACK_NOTIFICATIONS_CHANNEL,
+            notifChannel,
             `📋 Nuovo task: *${input.title}*${assignee} — Priority: ${input.priority ?? "medium"}`,
           ).catch(() => {});
         }
 
-        return `Task "${input.title}" creato con successo${input.assigned_to_name ? ` e assegnato a ${input.assigned_to_name}` : ""}. ${config.SLACK_NOTIFICATIONS_CHANNEL ? "Notifica inviata su Slack." : ""}`;
+        return `Task "${input.title}" creato con successo${input.assigned_to_name ? ` e assegnato a ${input.assigned_to_name}` : ""}. ${notifChannel ? "Notifica inviata su Slack." : ""}`;
       }
 
       if (name === "send_slack_notification") {
-        let channelId = input.channel_id || config.SLACK_NOTIFICATIONS_CHANNEL;
+        let channelId = input.channel_id || getNotificationsChannel();
 
         // DM a specific person by name
         if (input.recipient_name) {

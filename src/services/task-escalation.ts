@@ -5,7 +5,7 @@ import { config } from "../config.js";
 import { db } from "../models/database.js";
 import { employees, tasks } from "../models/schema.js";
 import { sendEmail } from "./email-manager.js";
-import { sendSlackMessage, sendSlackTaskNotification } from "../bot/slack-monitor.js";
+import { sendSlackMessage, sendSlackTaskNotification, getNotificationsChannel } from "../bot/slack-monitor.js";
 import { logger } from "../utils/logger.js";
 import { notifyAssigneeAndOwner } from "../utils/telegram.js";
 
@@ -168,7 +168,7 @@ async function executeEscalation(bot: Bot, action: EscalationAction): Promise<vo
         bot, assignedTo ?? null,
         `\u26A0\uFE0F Task "${taskTitle}" fermo da 3+ giorni dopo la scadenza (${assignee}). Serve intervento.`,
       );
-      if (config.SLACK_NOTIFICATIONS_CHANNEL) {
+      const _notifCh = getNotificationsChannel(); if (_notifCh) {
         await sendSlackMessage(
           config.SLACK_NOTIFICATIONS_CHANNEL,
           `\u26A0\uFE0F Task overdue da 3+ giorni: "${taskTitle}" (${assignee}). Necessario intervento.`,

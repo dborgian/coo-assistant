@@ -3,7 +3,7 @@ import { and, eq, gte, lte, sql } from "drizzle-orm";
 import { config } from "../config.js";
 import { db } from "../models/database.js";
 import { employees, intelligenceEvents, tasks } from "../models/schema.js";
-import { sendSlackMessage } from "../bot/slack-monitor.js";
+import { sendSlackMessage, getNotificationsChannel } from "../bot/slack-monitor.js";
 import { logger } from "../utils/logger.js";
 
 export async function checkCommitmentFulfillment(bot: Bot): Promise<void> {
@@ -49,8 +49,8 @@ export async function checkCommitmentFulfillment(bot: Bot): Promise<void> {
     try {
       await bot.api.sendMessage(config.TELEGRAM_OWNER_CHAT_ID, msg);
       // Also post to Slack
-      if (config.SLACK_NOTIFICATIONS_CHANNEL) {
-        await sendSlackMessage(config.SLACK_NOTIFICATIONS_CHANNEL, msg).catch(() => {});
+      const _notifCh = getNotificationsChannel(); if (_notifCh) {
+        await sendSlackMessage(_notifCh, msg).catch(() => {});
       }
     } catch (err) {
       logger.error({ err }, "Failed to send commitment alert");

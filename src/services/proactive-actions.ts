@@ -6,7 +6,7 @@ import { db } from "../models/database.js";
 import { employees, tasks, messageLogs } from "../models/schema.js";
 import { getTodayEvents } from "./calendar-sync.js";
 import { getTeamWorkload } from "./workload-tracker.js";
-import { sendSlackMessage } from "../bot/slack-monitor.js";
+import { sendSlackMessage, getNotificationsChannel } from "../bot/slack-monitor.js";
 import { logger } from "../utils/logger.js";
 
 export async function runProactiveCheck(bot: Bot): Promise<void> {
@@ -95,8 +95,8 @@ export async function runProactiveCheck(bot: Bot): Promise<void> {
       const msg = `\uD83E\uDD16 COO AI — Check Proattivo\n\n${recommendation}`;
       await bot.api.sendMessage(config.TELEGRAM_OWNER_CHAT_ID, msg);
       // Also post to Slack notifications channel
-      if (config.SLACK_NOTIFICATIONS_CHANNEL) {
-        await sendSlackMessage(config.SLACK_NOTIFICATIONS_CHANNEL, msg).catch(() => {});
+      const _notifCh = getNotificationsChannel(); if (_notifCh) {
+        await sendSlackMessage(_notifCh, msg).catch(() => {});
       }
       logger.info({ issueCount: issues.length }, "Proactive check: recommendations sent");
     }
@@ -169,8 +169,8 @@ export async function generateWeeklyDigest(bot: Bot): Promise<void> {
     const msg = `\uD83D\uDCCA Digest Settimanale\n\n${digest}`;
     await bot.api.sendMessage(config.TELEGRAM_OWNER_CHAT_ID, msg);
     // Also post to Slack
-    if (config.SLACK_NOTIFICATIONS_CHANNEL) {
-      await sendSlackMessage(config.SLACK_NOTIFICATIONS_CHANNEL, msg).catch(() => {});
+    const _notifCh = getNotificationsChannel(); if (_notifCh) {
+      await sendSlackMessage(_notifCh, msg).catch(() => {});
     }
     logger.info("Weekly digest sent");
   } catch (err) {

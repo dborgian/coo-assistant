@@ -2,7 +2,7 @@ import { google } from "googleapis";
 import { agent } from "../core/agent.js";
 import { config } from "../config.js";
 import { getGoogleAuth, isGoogleConfigured } from "../core/google-auth.js";
-import { sendSlackMessage } from "../bot/slack-monitor.js";
+import { sendSlackMessage, getNotificationsChannel } from "../bot/slack-monitor.js";
 import { createMeetingDoc } from "./google-docs-manager.js";
 import { logger } from "../utils/logger.js";
 
@@ -94,10 +94,11 @@ export async function checkRecentMeetings(): Promise<void> {
       );
 
       // Post to Slack
-      if (config.SLACK_NOTIFICATIONS_CHANNEL) {
+      const meetNotifCh = getNotificationsChannel();
+      if (meetNotifCh) {
         const docLink = doc ? `\nGoogle Doc: ${doc.url}` : "";
         await sendSlackMessage(
-          config.SLACK_NOTIFICATIONS_CHANNEL,
+          meetNotifCh,
           `Meeting Notes — *${title}* (${date})\nPartecipanti: ${attendees}\n\n${notes}${docLink}`,
         ).catch(() => {});
       }

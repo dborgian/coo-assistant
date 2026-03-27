@@ -16,6 +16,22 @@ let botRef: Bot | null = null;
 const userNameCache = new Map<string, string>();
 const channelNameCache = new Map<string, string>();
 
+// Auto-discovered channels where the bot is a member
+const botChannels = new Map<string, string>(); // channelId → channelName
+
+/** Get the best channel for notifications (configured or first auto-discovered) */
+export function getNotificationsChannel(): string | null {
+  if (config.SLACK_NOTIFICATIONS_CHANNEL) return config.SLACK_NOTIFICATIONS_CHANNEL;
+  // Fallback to first discovered channel
+  const first = botChannels.keys().next();
+  return first.done ? null : first.value;
+}
+
+/** Get all channels the bot is in */
+export function getBotChannels(): Map<string, string> {
+  return botChannels;
+}
+
 // Cache Slack user → employee mapping (5-min TTL)
 interface SlackAuthUser { employeeId: string; role: AccessRole; name: string }
 const slackAuthCache = new Map<string, { user: SlackAuthUser; cachedAt: number }>();
@@ -155,6 +171,37 @@ export async function startSlackMonitor(bot: Bot): Promise<boolean> {
     appToken: config.SLACK_APP_TOKEN,
     signingSecret: config.SLACK_SIGNING_SECRET || undefined,
     socketMode: true,
+  });
+
+  // Auto-discover channels the bot is a member of
+  try {
+    const convos = await slackApp.client.conversations.list({ types: "public_channel,private_channel", limit: 200 });
+    for (const ch of convos.channels ?? []) {
+      if (ch.is_member && ch.id && ch.name) {
+        botChannels.set(ch.id, ch.name);
+        channelNameCache.set(ch.id, ch.name);
+      }
+    }
+    logger.info({ channelCount: botChannels.size, channels: [...botChannels.values()] }, "Slack channels auto-discovered");
+  } catch (err) {
+    logger.debug({ err }, "Failed to auto-discover Slack channels");
+  }
+
+  // Auto-detect when bot is added to a new channel
+  slackApp.event("member_joined_channel" as any, async ({ event }: any) => {
+    try {
+      // Check if it's the bot that joined
+      const botInfo = await slackApp!.client.auth.test();
+      if (event.user === botInfo.user_id && event.channel) {
+        const chInfo = await slackApp!.client.conversations.info({ channel: event.channel });
+        const name = (chInfo.channel as any)?.name ?? event.channel;
+        botChannels.set(event.channel, name);
+        channelNameCache.set(event.channel, name);
+        logger.info({ channel: name, channelId: event.channel }, "Bot added to new Slack channel");
+      }
+    } catch {
+      // ignore
+    }
   });
 
   // App mention handler: @COO-Assistant in channels (kept for backwards compat)

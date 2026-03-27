@@ -4,7 +4,7 @@ import { agent } from "../core/agent.js";
 import { config } from "../config.js";
 import { db } from "../models/database.js";
 import { employees, messageLogs, tasks } from "../models/schema.js";
-import { sendSlackMessage } from "../bot/slack-monitor.js";
+import { sendSlackMessage, getNotificationsChannel } from "../bot/slack-monitor.js";
 import { logger } from "../utils/logger.js";
 
 /**
@@ -131,8 +131,8 @@ Scrivi in italiano, max 800 caratteri. Sii conciso e diretto.`,
 
   // Post to Slack + Telegram
   try {
-    if (config.SLACK_NOTIFICATIONS_CHANNEL) {
-      await sendSlackMessage(config.SLACK_NOTIFICATIONS_CHANNEL, msg);
+    const _notifCh = getNotificationsChannel(); if (_notifCh) {
+      await sendSlackMessage(_notifCh, msg);
     }
     await bot.api.sendMessage(config.TELEGRAM_OWNER_CHAT_ID, msg);
     logger.info({ responses: responses.length }, "EOD report generated and sent");

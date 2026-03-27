@@ -2,7 +2,7 @@ import { and, eq, gte, sql } from "drizzle-orm";
 import { agent } from "../core/agent.js";
 import { db } from "../models/database.js";
 import { messageLogs } from "../models/schema.js";
-import { sendSlackMessage } from "../bot/slack-monitor.js";
+import { sendSlackMessage, getNotificationsChannel } from "../bot/slack-monitor.js";
 import { logger } from "../utils/logger.js";
 
 const THREAD_QUIET_MINUTES = 30;
@@ -96,10 +96,10 @@ async function summarizeThread(threadTs: string, channelTitle: string): Promise<
 
   // Post summary — we need the channel ID, not name
   // For now post to notifications channel as we don't store channel IDs in messageLogs reliably
-  const { config } = await import("../config.js");
-  if (config.SLACK_NOTIFICATIONS_CHANNEL) {
+  const notifCh = getNotificationsChannel();
+  if (notifCh) {
     await sendSlackMessage(
-      config.SLACK_NOTIFICATIONS_CHANNEL,
+      notifCh,
       `\uD83D\uDCDD Thread Summary — ${channelTitle}\n\n${summary}`,
     );
   }
@@ -161,10 +161,10 @@ export async function generateDailySlackDigest(): Promise<void> {
     );
 
     if (summary && summary.trim().length > 20) {
-      const { config } = await import("../config.js");
-      if (config.SLACK_NOTIFICATIONS_CHANNEL) {
+      const digestCh = getNotificationsChannel();
+      if (digestCh) {
         await sendSlackMessage(
-          config.SLACK_NOTIFICATIONS_CHANNEL,
+          digestCh,
           `\uD83D\uDCCA Digest ${ch.chatTitle} — ${new Date().toLocaleDateString("it-IT")}\n\n${summary}`,
         );
       }
