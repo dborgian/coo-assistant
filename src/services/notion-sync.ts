@@ -232,7 +232,7 @@ export async function getNotionWorkspaceSummary(): Promise<NotionWorkspaceSummar
   }
 
   const [tasks, projects] = await Promise.all([
-    getNotionTasks(),
+    getNotionTasksViaSearch(),
     getNotionProjects(),
   ]);
 

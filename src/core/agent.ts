@@ -1018,7 +1018,7 @@ ${JSON.stringify(data, null, 2)}`;
         if (action === "update_task") {
           if (!input.title) return "Titolo del task richiesto per l'aggiornamento.";
           // Find task in internal DB by title to get Notion page ID
-          const found = await db.select({ externalId: tasks.externalId, title: tasks.title })
+          const found = await db.select({ id: tasks.id, externalId: tasks.externalId, title: tasks.title })
             .from(tasks)
             .where(ilike(tasks.title, `%${input.title}%`))
             .limit(1);
@@ -1040,6 +1040,26 @@ ${JSON.stringify(data, null, 2)}`;
             if (input.due_date) results.push(ok ? `deadline → ${input.due_date}` : "aggiornamento deadline fallito");
             if (input.assignee) results.push(ok ? `assegnato a ${input.assignee}` : `assegnazione a ${input.assignee} fallita (utente Notion non trovato?)`);
           }
+          // Mirror changes to internal DB
+          if (found[0]?.externalId) {
+            const dbUpdates: Record<string, any> = { updatedAt: new Date() };
+            const notionStatusMap: Record<string, string> = {
+              "Not started": "pending", "In progress": "in_progress", "In Progress": "in_progress",
+              "Done": "done", "Cancelled": "cancelled",
+            };
+            if (input.status) dbUpdates.status = notionStatusMap[input.status] ?? input.status.toLowerCase().replace(/\s+/g, "_");
+            if (input.priority) dbUpdates.priority = input.priority.toLowerCase();
+            if (input.due_date) dbUpdates.dueDate = parseLocalDate(input.due_date, input.timezone ?? userTz);
+            if (input.assignee) {
+              const [assigneeEmp] = await db.select({ id: employees.id }).from(employees)
+                .where(sql`${employees.name} ILIKE ${"%" + input.assignee + "%"}`).limit(1);
+              if (assigneeEmp) dbUpdates.assignedTo = assigneeEmp.id;
+            }
+            if (Object.keys(dbUpdates).length > 1) {
+              await db.update(tasks).set(dbUpdates).where(eq(tasks.externalId, found[0].externalId));
+            }
+          }
+
           return results.length ? `Task Notion "${found[0]?.title}" aggiornato: ${results.join(", ")}.` : "Nessun campo da aggiornare specificato.";
         }
         if (action === "delete_task") {
@@ -1122,6 +1142,15 @@ ${JSON.stringify(data, null, 2)}`;
               archiveNotionPage(notionPageId).catch((e) =>
                 logger.error({ err: e, notionPageId }, "Notion archive on delete failed"),
               );
+            } else if (isNotionConfigured()) {
+              // No local externalId — search Notion by title and archive if found
+              searchNotion(t.title).then((results) => {
+                const match = results.find((r) => r.title.toLowerCase() === t.title.toLowerCase());
+                if (match) {
+                  const pageId = match.url.match(/[a-f0-9]{32}$/)?.[0] ?? match.url.split("/").pop()?.replace(/-/g, "");
+                  if (pageId) archiveNotionPage(pageId).catch(() => {});
+                }
+              }).catch(() => {});
             }
             deleteGoogleTask(t.id).catch(() => {});
             await db.delete(tasks).where(eq(tasks.id, t.id));
@@ -1151,6 +1180,15 @@ ${JSON.stringify(data, null, 2)}`;
             description: input.new_description,
             dueDate: input.new_due_date ? parseLocalDate(input.new_due_date, input.timezone ?? userTz) : undefined,
           }).catch(() => {});
+        }
+        // Sync changes to Notion
+        if (task.externalId?.startsWith("notion:")) {
+          const notionPageId = task.externalId.replace(/^notion(-done)?:/, "");
+          updateNotionTaskProperties(notionPageId, {
+            priority: input.new_priority,
+            dueDate: input.new_due_date,
+            assignee: input.new_assigned_to,
+          }).catch((e) => logger.error({ err: e, notionPageId }, "Notion property sync on edit failed"));
         }
         // Trigger reschedule if priority or deadline changed and task was scheduled
         if ((input.new_priority || input.new_due_date) && task.autoScheduled) {

@@ -4,6 +4,7 @@ import { config } from "../config.js";
 import { db } from "../models/database.js";
 import { tasks, employees } from "../models/schema.js";
 import { createNotionTask, isNotionConfigured, getNotionTasksViaSearch, updateNotionTaskStatus, updateNotionTaskProperties, archiveNotionPage } from "./notion-sync.js";
+import { completeGoogleTask } from "./google-tasks-sync.js";
 import { logger } from "../utils/logger.js";
 
 export async function syncTasksToNotion(bot: Bot): Promise<void> {
@@ -164,11 +165,14 @@ export async function syncNotionToTasks(bot: Bot): Promise<void> {
       if (existing) {
         // Bidirectional status sync: if Notion status changed, update our DB
         const notionStatus = statusMap[nt.status] ?? "pending";
-        if (existing.status !== notionStatus && notionStatus !== existing.status) {
+        if (existing.status !== notionStatus) {
           await db
             .update(tasks)
             .set({ status: notionStatus, updatedAt: new Date() })
             .where(eq(tasks.id, existing.id));
+          if (notionStatus === "done" || notionStatus === "cancelled") {
+            completeGoogleTask(existing.id).catch(() => {});
+          }
           statusUpdated++;
         }
         continue;
