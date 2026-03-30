@@ -20,6 +20,16 @@ import {
   removeMonitoredSlackChannel,
 } from "./slack-monitor.js";
 
+const WAITING_PHRASES = [
+  "Okay, dammi un attimo...",
+  "Ci penso su un secondo...",
+  "Aspetta, ci sto lavorando...",
+  "Un momento, sto elaborando...",
+  "Fammi controllare...",
+  "Sì sì, arrivo...",
+  "Sto guardando, un sec...",
+];
+
 export async function startCommand(ctx: CommandContext<Context>): Promise<void> {
   // Check if this is a first-time user (no auth user means not in DB)
   const user = getAuthUser(ctx);
@@ -800,24 +810,35 @@ export async function askCommand(ctx: Context): Promise<void> {
   const user = getAuthUser(ctx);
   logger.info({ query: query.slice(0, 100), user: user?.name, role: user?.role }, "User query received");
 
-  const { text, files } = await agent.answerQuery(
-    query,
-    user?.role ?? "viewer",
-    user?.employeeId ?? null,
-    user?.name,
-  );
+  const phrase = WAITING_PHRASES[Math.floor(Math.random() * WAITING_PHRASES.length)];
+  const waitingMsg = await ctx.reply(phrase);
 
-  if (text.length > 4000) {
-    for (let i = 0; i < text.length; i += 4000) {
-      await ctx.reply(text.slice(i, i + 4000));
-    }
-  } else {
-    await ctx.reply(text);
-  }
+  try {
+    const { text, files } = await agent.answerQuery(
+      query,
+      user?.role ?? "viewer",
+      user?.employeeId ?? null,
+      user?.name,
+    );
 
-  if (files) {
-    for (const f of files) {
-      await ctx.replyWithDocument(new InputFile(f.buffer, f.filename));
+    await ctx.api.deleteMessage(ctx.chat!.id, waitingMsg.message_id).catch(() => {});
+
+    if (text.length > 4000) {
+      for (let i = 0; i < text.length; i += 4000) {
+        await ctx.reply(text.slice(i, i + 4000));
+      }
+    } else {
+      await ctx.reply(text);
     }
+
+    if (files) {
+      for (const f of files) {
+        await ctx.replyWithDocument(new InputFile(f.buffer, f.filename));
+      }
+    }
+  } catch (err) {
+    await ctx.api.deleteMessage(ctx.chat!.id, waitingMsg.message_id).catch(() => {});
+    logger.error({ err }, "askCommand failed");
+    await ctx.reply("Ops, qualcosa è andato storto. Riprova tra poco.");
   }
 }
