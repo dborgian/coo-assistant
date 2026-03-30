@@ -746,6 +746,23 @@ ${JSON.stringify(data, null, 2)}`;
           createGoogleTask(newTask.id).catch(() => {});
         }
 
+        // Sync to Notion (auto, no need to mention "notion" in the request)
+        if (isNotionConfigured()) {
+          createNotionTask(input.title, {
+            assignee: input.assigned_to_name,
+            dueDate: input.due_date,
+            priority: input.priority,
+          }).then((url) => {
+            if (url && newTask?.id) {
+              const pageId = url.match(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/)?.[0]
+                ?? url.match(/([a-f0-9]{32})/)?.[1];
+              if (pageId) {
+                db.update(tasks).set({ externalId: `notion:${pageId}` }).where(eq(tasks.id, newTask.id)).catch(() => {});
+              }
+            }
+          }).catch((e) => logger.error({ err: e }, "Notion sync from create_task failed"));
+        }
+
         // Instant tiered notification to assignee based on time to deadline
         if (assignedTo && input.due_date) {
           const [assigneeEmp] = await db
@@ -779,7 +796,7 @@ ${JSON.stringify(data, null, 2)}`;
           ).catch(() => {});
         }
 
-        return `Task "${input.title}" creato con successo${input.assigned_to_name ? ` e assegnato a ${input.assigned_to_name}` : ""}. ${notifChannel ? "Notifica inviata su Slack." : ""}`;
+        return `Task "${input.title}" creato con successo${input.assigned_to_name ? ` e assegnato a ${input.assigned_to_name}` : ""}. ${notifChannel ? "Notifica inviata su Slack." : ""}${isNotionConfigured() ? " Sincronizzato su Notion." : ""}`;
       }
 
       if (name === "send_slack_notification") {
