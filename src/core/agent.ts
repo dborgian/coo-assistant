@@ -20,7 +20,7 @@ import { rescheduleTask, unscheduleTask } from "../services/auto-scheduler.js";
 import { deleteCalendarEvent } from "../services/calendar-sync.js";
 import { createGoogleTask, completeGoogleTask, updateGoogleTask, deleteGoogleTask } from "../services/google-tasks-sync.js";
 import { getProjectETA } from "../services/project-eta.js";
-import { addNotionComment, createNotionProject, updateNotionTaskProperties } from "../services/notion-sync.js";
+import { addNotionComment, createNotionProject, updateNotionTaskProperties, archiveNotionPage } from "../services/notion-sync.js";
 import { getCommitments } from "../services/commitment-tracker.js";
 import { getTeamSentiment } from "../services/sentiment-analyzer.js";
 import { getCommunicationOverview } from "../services/communication-patterns.js";
@@ -1101,9 +1101,20 @@ ${JSON.stringify(data, null, 2)}`;
         const task = matchingTasks[0];
 
         if (input.action === "delete") {
-          deleteGoogleTask(task.id).catch(() => {});
-          await db.delete(tasks).where(eq(tasks.id, task.id));
-          return `Task "${task.title}" eliminato.`;
+          for (const t of matchingTasks) {
+            if (t.externalId?.startsWith("notion:")) {
+              const notionPageId = t.externalId.replace(/^notion(-done)?:/, "");
+              archiveNotionPage(notionPageId).catch((e) =>
+                logger.error({ err: e, notionPageId }, "Notion archive on delete failed"),
+              );
+            }
+            deleteGoogleTask(t.id).catch(() => {});
+            await db.delete(tasks).where(eq(tasks.id, t.id));
+          }
+          if (matchingTasks.length === 1) {
+            return `Task "${matchingTasks[0].title}" eliminato.`;
+          }
+          return `${matchingTasks.length} task eliminati: ${matchingTasks.map((t) => `"${t.title}"`).join(", ")}.`;
         }
 
         const updates: Record<string, any> = { updatedAt: new Date() };

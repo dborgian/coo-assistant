@@ -6,6 +6,8 @@ import { config } from "../config.js";
 import { db } from "../models/database.js";
 import { clients, employees, intelligenceEvents, messageLogs, tasks } from "../models/schema.js";
 import { runInlineExtractors } from "../services/intelligence-pipeline.js";
+import { updateNotionTaskStatus } from "../services/notion-sync.js";
+import { completeGoogleTask } from "../services/google-tasks-sync.js";
 import { logger } from "../utils/logger.js";
 import type { AccessRole } from "./auth.js";
 
@@ -289,7 +291,24 @@ export async function startSlackMonitor(bot: Bot): Promise<boolean> {
     await ack();
     try {
       const taskId = (action as any).value;
+      const [task] = await db.select().from(tasks).where(eq(tasks.id, taskId)).limit(1);
+      if (!task) {
+        await respond({ text: "Task non trovato.", replace_original: false });
+        return;
+      }
       await db.update(tasks).set({ status: "done", updatedAt: new Date() }).where(eq(tasks.id, taskId));
+
+      // Sync to Notion
+      if (task.externalId?.startsWith("notion:")) {
+        const notionPageId = task.externalId.replace(/^notion(-done)?:/, "");
+        updateNotionTaskStatus(notionPageId, "done").catch((e) =>
+          logger.error({ err: e, notionPageId }, "Notion status sync from Slack failed"),
+        );
+      }
+
+      // Sync to Google Tasks
+      completeGoogleTask(taskId).catch(() => {});
+
       await respond({ text: "\u2705 Task completato!", replace_original: false });
       logger.info({ taskId }, "Task completed via Slack button");
     } catch (err) {
