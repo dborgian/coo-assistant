@@ -73,7 +73,7 @@ AZIONI CHE PUOI ESEGUIRE (usa i tools quando l'utente lo chiede):
 - Generare report PDF: giornaliero, settimanale, o per employee (generate_report_pdf)
 - Gestire il team: aggiungere/elencare employee e client (manage_team)
 - Interagire con Notion: creare task, aggiornare task esistenti (status/deadline/assignee/priorità), cercare pagine (notion_action)
-- Per le scadenze: se l'utente dice "tra 3 ore", "domani alle 14", ecc., calcola la data/ora assoluta usando current_datetime dal context e usa il formato YYYY-MM-DDTHH:mm nel campo due_date
+- Per le scadenze: calcola la data/ora assoluta usando current_datetime e timezone dal context. Formato: YYYY-MM-DDTHH:mm. Se l'utente specifica una timezone diversa (es. "ora italiana", "ora di New York", "alle 14 fuso orario Roma"), aggiungi il parametro timezone nel tool call con il valore IANA (es. "Europe/Rome", "America/New_York") — il sistema interpreterà due_date in quella timezone
 - Cercare file su Google Drive (search_drive)
 - Consultare lo storico report passati (get_report_history)
 - Ottenere un riassunto AI delle conversazioni Slack (get_slack_summary)
@@ -279,6 +279,7 @@ ${JSON.stringify(data, null, 2)}`;
           priority: { type: "string", enum: ["low", "medium", "high", "urgent"], description: "Task priority" },
           assigned_to_name: { type: "string", description: "Employee name to assign the task to (optional)" },
           due_date: { type: "string", description: "Due date in YYYY-MM-DD or YYYY-MM-DDTHH:mm format (e.g. 2026-03-26T16:00). Always include time if the user specifies it." },
+          timezone: { type: "string", description: "IANA timezone for due_date if the user specifies a timezone different from their default (e.g. 'Europe/Rome', 'America/New_York'). Omit if the user's default timezone applies." },
         },
         required: ["title"],
       },
@@ -363,6 +364,7 @@ ${JSON.stringify(data, null, 2)}`;
           priority: { type: "string", description: "Task priority (e.g. 'High', 'Medium', 'Low')" },
           due_date: { type: "string", description: "Due date in YYYY-MM-DD or YYYY-MM-DDTHH:mm format (e.g. 2026-03-30T18:00). Always include time if the user specifies or implies one (e.g. 'tra 3 ore', 'alle 14')." },
           assignee: { type: "string", description: "Employee name to assign the task to" },
+          timezone: { type: "string", description: "IANA timezone for due_date if the user specifies a timezone different from their default (e.g. 'Europe/Rome', 'America/New_York'). Omit if the user's default timezone applies." },
         },
         required: ["action"],
       },
@@ -414,6 +416,7 @@ ${JSON.stringify(data, null, 2)}`;
           new_priority: { type: "string", enum: ["low", "medium", "high", "urgent"], description: "New priority (optional)" },
           new_due_date: { type: "string", description: "New due date YYYY-MM-DD or YYYY-MM-DDTHH:mm (optional)" },
           new_assigned_to: { type: "string", description: "New assignee name (optional)" },
+          timezone: { type: "string", description: "IANA timezone for new_due_date if the user specifies a timezone different from their default (e.g. 'Europe/Rome', 'America/New_York'). Omit if the user's default timezone applies." },
         },
         required: ["task_title", "action"],
       },
@@ -733,7 +736,7 @@ ${JSON.stringify(data, null, 2)}`;
           description: input.description ?? null,
           priority: input.priority ?? "medium",
           assignedTo,
-          dueDate: input.due_date ? parseLocalDate(input.due_date, userTz) : null,
+          dueDate: input.due_date ? parseLocalDate(input.due_date, input.timezone ?? userTz) : null,
           source: "ai",
           status: "pending",
         }).returning({ id: tasks.id });
@@ -749,7 +752,7 @@ ${JSON.stringify(data, null, 2)}`;
             .select({ name: employees.name, email: employees.email, googleEmail: employees.googleEmail, slackMemberId: employees.slackMemberId, timezone: employees.timezone })
             .from(employees).where(eq(employees.id, assignedTo)).limit(1);
           if (assigneeEmp) {
-            const parsedDue = input.due_date ? parseLocalDate(input.due_date, userTz) : null;
+            const parsedDue = input.due_date ? parseLocalDate(input.due_date, input.timezone ?? userTz) : null;
             if (parsedDue) {
               sendTieredNotification(
                 { id: newTask?.id, title: input.title, priority: input.priority ?? "medium", description: input.description ?? null, dueDate: parsedDue },
@@ -954,7 +957,7 @@ ${JSON.stringify(data, null, 2)}`;
               .where(sql`${employees.name} ILIKE ${"%" + input.assignee + "%"}`).limit(1);
             notionAssignedTo = empRow?.id ?? null;
           }
-          const notionDue = input.due_date ? parseLocalDate(input.due_date, userTz) : null;
+          const notionDue = input.due_date ? parseLocalDate(input.due_date, input.timezone ?? userTz) : null;
           const notionPageId = url?.match(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/)?.[0]
             ?? url?.match(/([a-f0-9]{32})/)?.[1];
           const [notionDbTask] = await db.insert(tasks).values({
@@ -1078,7 +1081,7 @@ ${JSON.stringify(data, null, 2)}`;
         if (input.new_title) updates.title = input.new_title;
         if (input.new_description) updates.description = input.new_description;
         if (input.new_priority) updates.priority = input.new_priority;
-        if (input.new_due_date) updates.dueDate = parseLocalDate(input.new_due_date, userTz);
+        if (input.new_due_date) updates.dueDate = parseLocalDate(input.new_due_date, input.timezone ?? userTz);
         if (input.new_assigned_to) {
           const [emp] = await db.select().from(employees)
             .where(sql`${employees.name} ILIKE ${"%" + input.new_assigned_to + "%"}`).limit(1);
@@ -1091,7 +1094,7 @@ ${JSON.stringify(data, null, 2)}`;
           updateGoogleTask(task.id, {
             title: input.new_title,
             description: input.new_description,
-            dueDate: input.new_due_date ? parseLocalDate(input.new_due_date, userTz) : undefined,
+            dueDate: input.new_due_date ? parseLocalDate(input.new_due_date, input.timezone ?? userTz) : undefined,
           }).catch(() => {});
         }
         // Trigger reschedule if priority or deadline changed and task was scheduled
@@ -1166,7 +1169,7 @@ ${JSON.stringify(data, null, 2)}`;
           isRecurring: true,
           recurrencePattern: input.pattern,
           recurrenceDays: input.days ?? null,
-          recurrenceEndDate: input.end_date ? parseLocalDate(input.end_date, userTz) : null,
+          recurrenceEndDate: input.end_date ? parseLocalDate(input.end_date, input.timezone ?? userTz) : null,
           source: "ai",
           status: "pending",
         });
@@ -1414,7 +1417,7 @@ Genera 5-10 task concreti e actionable.`,
             title: pt.title,
             priority: pt.priority ?? "medium",
             estimatedMinutes: pt.estimated_minutes ?? 60,
-            dueDate: input.deadline ? parseLocalDate(input.deadline, userTz) : null,
+            dueDate: input.deadline ? parseLocalDate(input.deadline, input.timezone ?? userTz) : null,
             source: "ai",
             status: "pending",
           }).returning({ id: tasks.id });
