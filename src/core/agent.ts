@@ -73,6 +73,7 @@ AZIONI CHE PUOI ESEGUIRE (usa i tools quando l'utente lo chiede):
 - Generare report PDF: giornaliero, settimanale, o per employee (generate_report_pdf)
 - Gestire il team: aggiungere/elencare employee e client (manage_team)
 - Interagire con Notion: creare task, aggiornare task esistenti (status/deadline/assignee/priorità), cercare pagine (notion_action)
+- Per le scadenze: se l'utente dice "tra 3 ore", "domani alle 14", ecc., calcola la data/ora assoluta usando current_datetime dal context e usa il formato YYYY-MM-DDTHH:mm nel campo due_date
 - Cercare file su Google Drive (search_drive)
 - Consultare lo storico report passati (get_report_history)
 - Ottenere un riassunto AI delle conversazioni Slack (get_slack_summary)
@@ -1496,7 +1497,7 @@ Genera 5-10 task concreti e actionable.`,
     userAuth?: GoogleAuth | null,
   ): Promise<Record<string, unknown>> {
     const context: Record<string, unknown> = {
-      today: new Date().toISOString().split("T")[0],
+      current_datetime: new Date().toISOString(),
     };
 
     if (role === "viewer") {
