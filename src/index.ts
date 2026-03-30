@@ -8,7 +8,7 @@ import { checkPendingMessages } from "./services/chat-monitor.js";
 import { generateAndSendDailyReport } from "./services/daily-reporter.js";
 import { checkImportantEmails } from "./services/email-manager.js";
 import { checkAndSendReminders } from "./services/task-reminder.js";
-import { syncNotionData } from "./services/notion-sync.js";
+import { syncNotionData, discoverNotionUsers } from "./services/notion-sync.js";
 import { runEscalationCheck } from "./services/task-escalation.js";
 import { runAutoPrioritization } from "./services/auto-prioritizer.js";
 import { generateRecurringTasks } from "./services/recurring-tasks.js";
@@ -81,6 +81,9 @@ async function main(): Promise<void> {
     eodCollect: async () => { await collectEodResponses(bot); },
     meetingNotes: async () => { await checkRecentMeetings(); },
   });
+
+  // Discover and link Notion users to employees
+  discoverNotionUsers().catch((err) => logger.warn({ err }, "Notion user discovery failed at startup"));
 
   // Start Telethon/GramJS userbot for chat monitoring
   const userbotStarted = await startUserbot(bot);

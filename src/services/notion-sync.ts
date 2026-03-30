@@ -1,7 +1,10 @@
 import { Client } from "@notionhq/client";
 import type { Bot } from "grammy";
+import { ilike, eq } from "drizzle-orm";
 import { config } from "../config.js";
 import { logger } from "../utils/logger.js";
+import { db } from "../models/database.js";
+import { employees } from "../models/schema.js";
 
 // --- Types ---
 
@@ -50,6 +53,47 @@ function getClient(): Client {
     _client = new Client({ auth: config.NOTION_API_KEY });
   }
   return _client;
+}
+
+// --- User Discovery ---
+
+export async function discoverNotionUsers(): Promise<void> {
+  if (!isNotionConfigured()) return;
+  const client = getClient();
+  try {
+    const response = await client.users.list({});
+    const allEmployees = await db.select().from(employees);
+    let linked = 0;
+
+    for (const user of response.results) {
+      if (user.type !== "person" || !user.name) continue;
+      const email = (user as any).person?.email as string | undefined;
+      const match = allEmployees.find(
+        (e) =>
+          e.name?.toLowerCase() === user.name!.toLowerCase() ||
+          (email && e.email?.toLowerCase() === email.toLowerCase()),
+      );
+      if (match && !match.notionUserId) {
+        await db.update(employees)
+          .set({ notionUserId: user.id, notionUserName: user.name })
+          .where(eq(employees.id, match.id));
+        logger.info({ employee: match.name, notionId: user.id }, "Notion user linked");
+        linked++;
+      }
+    }
+    logger.info({ linked, total: response.results.length }, "Notion user discovery complete");
+  } catch (err) {
+    logger.warn({ err }, "Notion user discovery failed");
+  }
+}
+
+// --- Helper: resolve employee name → Notion user ID ---
+
+async function resolveNotionUserId(name: string): Promise<string | null> {
+  const emp = await db.select().from(employees)
+    .where(ilike(employees.name, `%${name}%`))
+    .limit(1);
+  return emp[0]?.notionUserId ?? null;
 }
 
 // --- Property Helpers (work with any property shape) ---
@@ -200,7 +244,7 @@ export async function searchNotion(query: string): Promise<Array<{ title: string
 
 export async function createNotionTask(
   title: string,
-  props?: { status?: string; priority?: string; dueDate?: string },
+  props?: { status?: string; priority?: string; dueDate?: string; assignee?: string },
 ): Promise<string | null> {
   if (!config.NOTION_TASKS_DATABASE_ID) return null;
 
@@ -256,6 +300,19 @@ export async function createNotionTask(
           ) ?? "Due date")
         : "Due date";
       properties[datePropName] = { date: { start: props.dueDate } };
+    }
+
+    if (props?.assignee) {
+      const notionUserId = await resolveNotionUserId(props.assignee);
+      if (notionUserId) {
+        // Discover assignee property name
+        const assigneePropName = dbInfo?.properties
+          ? (["Assignee", "Assign", "Person", "Owner"].find(
+              (n) => (dbInfo.properties[n] as any)?.type === "people",
+            ) ?? "Assignee")
+          : "Assignee";
+        properties[assigneePropName] = { people: [{ id: notionUserId }] };
+      }
     }
 
     const page = await client.pages.create({
@@ -314,17 +371,43 @@ export async function archiveNotionPage(notionPageId: string): Promise<boolean> 
 
 export async function updateNotionTaskProperties(
   notionPageId: string,
-  updates: { priority?: string; dueDate?: string; description?: string },
+  updates: { priority?: string; dueDate?: string; description?: string; assignee?: string },
 ): Promise<boolean> {
   const client = getClient();
   try {
     const properties: Record<string, any> = {};
 
+    // Discover schema for flexible property name resolution
+    let dbInfo: any = null;
+    if (config.NOTION_TASKS_DATABASE_ID && (updates.dueDate || updates.assignee)) {
+      try {
+        dbInfo = await client.databases.retrieve({ database_id: config.NOTION_TASKS_DATABASE_ID }) as any;
+      } catch {
+        // ignore — fall back to hardcoded names
+      }
+    }
+
     if (updates.priority) {
       properties["Priority"] = { select: { name: updates.priority } };
     }
     if (updates.dueDate) {
-      properties["Due date"] = { date: { start: updates.dueDate } };
+      const datePropName = dbInfo?.properties
+        ? (["Due date", "Due Date", "Due", "Deadline", "Date"].find(
+            (n) => (dbInfo.properties[n] as any)?.type === "date",
+          ) ?? "Due date")
+        : "Due date";
+      properties[datePropName] = { date: { start: updates.dueDate } };
+    }
+    if (updates.assignee) {
+      const notionUserId = await resolveNotionUserId(updates.assignee);
+      if (notionUserId) {
+        const assigneePropName = dbInfo?.properties
+          ? (["Assignee", "Assign", "Person", "Owner"].find(
+              (n) => (dbInfo.properties[n] as any)?.type === "people",
+            ) ?? "Assignee")
+          : "Assignee";
+        properties[assigneePropName] = { people: [{ id: notionUserId }] };
+      }
     }
 
     if (Object.keys(properties).length) {
@@ -382,6 +465,12 @@ export async function createNotionProject(
     };
     if (props?.status) {
       properties["Status"] = { select: { name: props.status } };
+    }
+    if (props?.owner) {
+      const notionUserId = await resolveNotionUserId(props.owner);
+      if (notionUserId) {
+        properties["Owner"] = { people: [{ id: notionUserId }] };
+      }
     }
 
     const page = await client.pages.create({

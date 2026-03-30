@@ -1,12 +1,12 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, gte, ilike, inArray, sql } from "drizzle-orm";
 import { config } from "../config.js";
 import { db } from "../models/database.js";
 import { clients, dailyReports, employees, messageLogs, tasks } from "../models/schema.js";
 import { logger } from "../utils/logger.js";
 import { getTodayEvents } from "../services/calendar-sync.js";
 import { getUnreadImportantEmails, sendEmail, searchEmails, forwardEmail, replyToEmail } from "../services/email-manager.js";
-import { getNotionWorkspaceSummary, isNotionConfigured, createNotionTask, searchNotion } from "../services/notion-sync.js";
+import { getNotionWorkspaceSummary, isNotionConfigured, createNotionTask, searchNotion, updateNotionTaskStatus, discoverNotionUsers } from "../services/notion-sync.js";
 import { parseDateKeywords, findEmployeeInQuery, getActivityByDateRange, getEmployeeActivity } from "../services/history-query.js";
 import { listDriveFiles, searchDriveFiles, uploadFileToDrive } from "../services/drive-manager.js";
 import { getAuthForEmployee } from "./google-auth.js";
@@ -71,7 +71,7 @@ AZIONI CHE PUOI ESEGUIRE (usa i tools quando l'utente lo chiede):
 - Aggiornare lo status di un task (update_task_status)
 - Generare report PDF: giornaliero, settimanale, o per employee (generate_report_pdf)
 - Gestire il team: aggiungere/elencare employee e client (manage_team)
-- Interagire con Notion: creare task, cercare pagine (notion_action)
+- Interagire con Notion: creare task, aggiornare task esistenti (status/deadline/assignee/priorità), cercare pagine (notion_action)
 - Cercare file su Google Drive (search_drive)
 - Consultare lo storico report passati (get_report_history)
 - Ottenere un riassunto AI delle conversazioni Slack (get_slack_summary)
@@ -350,16 +350,17 @@ ${JSON.stringify(data, null, 2)}`;
     },
     {
       name: "notion_action",
-      description: "Interact with Notion workspace. Create tasks or search for pages/databases.",
+      description: "Interact with Notion workspace. Create tasks, update existing tasks (status, deadline, assignee, priority), or search for pages/databases.",
       input_schema: {
         type: "object" as const,
         properties: {
-          action: { type: "string", enum: ["create_task", "search"], description: "Action to perform" },
+          action: { type: "string", enum: ["create_task", "update_task", "search"], description: "Action to perform" },
           query: { type: "string", description: "Search query (for search action)" },
-          title: { type: "string", description: "Task title (for create_task)" },
-          status: { type: "string", description: "Task status (optional)" },
-          priority: { type: "string", description: "Task priority (optional)" },
-          due_date: { type: "string", description: "Due date YYYY-MM-DD (optional)" },
+          title: { type: "string", description: "Task title (for create_task) or task name to find (for update_task)" },
+          status: { type: "string", description: "Task status (e.g. 'In progress', 'Done', 'Not started')" },
+          priority: { type: "string", description: "Task priority (e.g. 'High', 'Medium', 'Low')" },
+          due_date: { type: "string", description: "Due date YYYY-MM-DD" },
+          assignee: { type: "string", description: "Employee name to assign the task to" },
         },
         required: ["action"],
       },
@@ -915,9 +916,36 @@ ${JSON.stringify(data, null, 2)}`;
         if (action === "create_task") {
           if (!input.title) return "Titolo richiesto per creare un task su Notion.";
           const url = await createNotionTask(input.title, {
-            status: input.status, priority: input.priority, dueDate: input.due_date,
+            status: input.status, priority: input.priority, dueDate: input.due_date, assignee: input.assignee,
           });
           return url ? `Task Notion "${input.title}" creato: ${url}` : "Creazione task Notion fallita — verifica la configurazione.";
+        }
+        if (action === "update_task") {
+          if (!input.title) return "Titolo del task richiesto per l'aggiornamento.";
+          // Find task in internal DB by title to get Notion page ID
+          const found = await db.select({ externalId: tasks.externalId, title: tasks.title })
+            .from(tasks)
+            .where(ilike(tasks.title, `%${input.title}%`))
+            .limit(1);
+          const notionId = found[0]?.externalId?.replace(/^notion(-done)?:/, "");
+          if (!notionId) return `Task "${input.title}" non trovato su Notion. Verifica che sia sincronizzato.`;
+
+          const results: string[] = [];
+          if (input.status) {
+            const ok = await updateNotionTaskStatus(notionId, input.status);
+            results.push(ok ? `status → "${input.status}"` : "aggiornamento status fallito");
+          }
+          if (input.priority || input.due_date || input.assignee) {
+            const ok = await updateNotionTaskProperties(notionId, {
+              priority: input.priority,
+              dueDate: input.due_date,
+              assignee: input.assignee,
+            });
+            if (input.priority) results.push(ok ? `priorità → "${input.priority}"` : "aggiornamento priorità fallito");
+            if (input.due_date) results.push(ok ? `deadline → ${input.due_date}` : "aggiornamento deadline fallito");
+            if (input.assignee) results.push(ok ? `assegnato a ${input.assignee}` : `assegnazione a ${input.assignee} fallita (utente Notion non trovato?)`);
+          }
+          return results.length ? `Task Notion "${found[0]?.title}" aggiornato: ${results.join(", ")}.` : "Nessun campo da aggiornare specificato.";
         }
         return `Azione Notion "${action}" non riconosciuta.`;
       }
