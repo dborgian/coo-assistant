@@ -787,6 +787,14 @@ ${JSON.stringify(data, null, 2)}`;
         if (!task) return `Task "${input.task_title}" non trovato.`;
         await db.update(tasks).set({ status: input.new_status, updatedAt: new Date() }).where(eq(tasks.id, task.id));
 
+        // Sync status to Notion
+        if (task.externalId?.startsWith("notion")) {
+          const notionPageId = task.externalId.replace(/^notion(-done)?:/, "");
+          updateNotionTaskStatus(notionPageId, input.new_status).catch((e) =>
+            logger.error({ err: e, notionPageId }, "Notion status sync failed"),
+          );
+        }
+
         // Sync status to Google Tasks
         if (input.new_status === "done" || input.new_status === "cancelled") {
           completeGoogleTask(task.id).catch(() => {});
