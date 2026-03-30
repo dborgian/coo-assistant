@@ -142,6 +142,7 @@ export async function handleOAuthCode(ctx: Context): Promise<boolean> {
             telegramUserId: telegramId,
             telegramUsername: username,
             googleRefreshToken: tokens.refresh_token,
+            googleEmail: email ?? null,
             timezone,
             updatedAt: new Date(),
           })
@@ -323,6 +324,7 @@ export async function handleOAuthCallback(
           .set({
             telegramUserId: telegramId,
             googleRefreshToken: tokens.refresh_token,
+            googleEmail: email ?? null,
             timezone,
             updatedAt: new Date(),
           })
@@ -351,6 +353,7 @@ export async function handleOAuthCallback(
         await db.insert(employees).values({
           name,
           email: email ?? null,
+          googleEmail: email ?? null,
           telegramUserId: telegramId,
           accessRole: "viewer",
           googleRefreshToken: tokens.refresh_token,
@@ -434,6 +437,7 @@ async function createEmployee(
   await db.insert(employees).values({
     name: extra?.name || ctx.from?.first_name || "Utente",
     email: extra?.email ?? null,
+    googleEmail: extra?.email ?? null,
     telegramUserId: telegramId,
     telegramUsername: username,
     accessRole: "viewer",

@@ -72,22 +72,21 @@ export async function getTodayEvents(authOverride?: GoogleAuth | null, calendarI
 }
 
 export async function getTeamEvents(): Promise<{ employee: string; events: CalendarEvent[] }[]> {
-  const auth = getGoogleAuth();
-  if (!auth) return [];
-
   const { db } = await import("../models/database.js");
   const { employees } = await import("../models/schema.js");
+  const { getUserGoogleAuth } = await import("../core/google-auth.js");
 
   const emps = await db
-    .select({ name: employees.name, googleEmail: employees.googleEmail })
+    .select({ name: employees.name, googleRefreshToken: employees.googleRefreshToken })
     .from(employees)
     .where(eq(employees.isActive, true));
 
   const results: { employee: string; events: CalendarEvent[] }[] = [];
   for (const emp of emps) {
-    if (!emp.googleEmail) continue;
+    if (!emp.googleRefreshToken) continue;
     try {
-      const events = await getTodayEvents(auth, emp.googleEmail);
+      const auth = getUserGoogleAuth(emp.googleRefreshToken);
+      const events = await getTodayEvents(auth, "primary");
       results.push({ employee: emp.name, events });
     } catch (err) {
       logger.warn({ err, employee: emp.name }, "Failed to fetch calendar for employee");

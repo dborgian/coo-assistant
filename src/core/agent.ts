@@ -9,7 +9,7 @@ import { getUnreadImportantEmails, sendEmail, searchEmails, forwardEmail, replyT
 import { getNotionWorkspaceSummary, isNotionConfigured, createNotionTask, searchNotion, updateNotionTaskStatus, discoverNotionUsers } from "../services/notion-sync.js";
 import { parseDateKeywords, findEmployeeInQuery, getActivityByDateRange, getEmployeeActivity } from "../services/history-query.js";
 import { listDriveFiles, searchDriveFiles, uploadFileToDrive } from "../services/drive-manager.js";
-import { getAuthForEmployee, getGoogleAuth } from "./google-auth.js";
+import { getAuthForEmployee, getGoogleAuth, getUserGoogleAuth } from "./google-auth.js";
 import type { GoogleAuth } from "./google-auth.js";
 import { generateDailyReportPdf, generateEmployeeReportPdf, generateWeeklyReportPdf, type DailyReportData } from "../services/pdf-generator.js";
 import { sendSlackMessage, getNotificationsChannel } from "../bot/slack-monitor.js";
@@ -1069,13 +1069,13 @@ ${JSON.stringify(data, null, 2)}`;
         }
 
         if (empName) {
-          const [emp] = await db.select({ name: employees.name, googleEmail: employees.googleEmail })
+          const [emp] = await db.select({ name: employees.name, googleRefreshToken: employees.googleRefreshToken })
             .from(employees)
             .where(sql`${employees.name} ILIKE ${"%" + input.employee_name + "%"}`)
             .limit(1);
-          if (!emp?.googleEmail) return `Nessun dipendente trovato o calendario non configurato per "${input.employee_name}".`;
-          const auth = getGoogleAuth();
-          const events = await getTodayEvents(auth, emp.googleEmail);
+          if (!emp?.googleRefreshToken) return `Calendario di "${input.employee_name}" non disponibile (Google non connesso).`;
+          const empAuth = getUserGoogleAuth(emp.googleRefreshToken);
+          const events = await getTodayEvents(empAuth, "primary");
           if (!events.length) return `Nessun evento nel calendario di ${emp.name} oggi.`;
           return `**${emp.name}:**\n${formatEvents(events)}`;
         }
