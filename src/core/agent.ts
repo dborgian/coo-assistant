@@ -946,6 +946,41 @@ ${JSON.stringify(data, null, 2)}`;
           const url = await createNotionTask(input.title, {
             status: input.status, priority: input.priority, dueDate: input.due_date, assignee: input.assignee,
           });
+
+          // Mirror in internal DB so reminders/escalation/notifications work
+          let notionAssignedTo: string | null = null;
+          if (input.assignee) {
+            const [empRow] = await db.select({ id: employees.id }).from(employees)
+              .where(sql`${employees.name} ILIKE ${"%" + input.assignee + "%"}`).limit(1);
+            notionAssignedTo = empRow?.id ?? null;
+          }
+          const notionDue = input.due_date ? parseLocalDate(input.due_date, userTz) : null;
+          const notionPageId = url?.match(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/)?.[0]
+            ?? url?.match(/([a-f0-9]{32})/)?.[1];
+          const [notionDbTask] = await db.insert(tasks).values({
+            title: input.title,
+            assignedTo: notionAssignedTo,
+            dueDate: notionDue,
+            priority: input.priority ?? "medium",
+            source: "notion",
+            externalId: notionPageId ? `notion:${notionPageId}` : null,
+            status: "pending",
+          }).returning({ id: tasks.id });
+
+          // Instant tiered notification
+          if (notionAssignedTo && notionDue) {
+            const [notifEmp] = await db
+              .select({ name: employees.name, email: employees.email, googleEmail: employees.googleEmail, slackMemberId: employees.slackMemberId })
+              .from(employees).where(eq(employees.id, notionAssignedTo)).limit(1);
+            if (notifEmp) {
+              sendTieredNotification(
+                { id: notionDbTask?.id, title: input.title, priority: input.priority ?? "medium", description: null, dueDate: notionDue },
+                notifEmp,
+                "Nuova task assegnata",
+              ).catch((e) => logger.error({ err: e }, "Notion task assignment notification failed"));
+            }
+          }
+
           return url ? `Task Notion "${input.title}" creato: ${url}` : "Creazione task Notion fallita — verifica la configurazione.";
         }
         if (action === "update_task") {

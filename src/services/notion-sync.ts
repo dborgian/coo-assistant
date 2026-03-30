@@ -299,7 +299,11 @@ export async function createNotionTask(
             (n) => (dbInfo.properties[n] as any)?.type === "date",
           ) ?? "Due date")
         : "Due date";
-      properties[datePropName] = { date: { start: props.dueDate } };
+      // Ensure full datetime format so Notion shows "include time"
+      const dateVal = props.dueDate.includes("T") && props.dueDate.split(":").length === 2
+        ? props.dueDate + ":00"
+        : props.dueDate;
+      properties[datePropName] = { date: { start: dateVal } };
     }
 
     if (props?.assignee) {
@@ -411,7 +415,11 @@ export async function updateNotionTaskProperties(
             (n) => (dbInfo.properties[n] as any)?.type === "date",
           ) ?? "Due date")
         : "Due date";
-      properties[datePropName] = { date: { start: updates.dueDate } };
+      // Ensure full datetime format so Notion shows "include time"
+      const dateVal = updates.dueDate.includes("T") && updates.dueDate.split(":").length === 2
+        ? updates.dueDate + ":00"
+        : updates.dueDate;
+      properties[datePropName] = { date: { start: dateVal } };
     }
     if (updates.assignee) {
       const notionUserId = await resolveNotionUserId(updates.assignee);
