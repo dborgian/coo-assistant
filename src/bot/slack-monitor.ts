@@ -141,11 +141,16 @@ async function handleSlackQuery(
   const phrase = WAITING_PHRASES[Math.floor(Math.random() * WAITING_PHRASES.length)];
   let waitingTs: string | undefined;
   if (slackApp && channelId) {
-    const waitingMsg = await slackApp.client.chat.postMessage({
-      channel: channelId,
-      text: phrase,
-    }).catch(() => undefined);
-    waitingTs = waitingMsg?.ts as string | undefined;
+    try {
+      const waitingMsg = await slackApp.client.chat.postMessage({
+        channel: channelId,
+        text: phrase,
+      });
+      waitingTs = waitingMsg.ts as string | undefined;
+      logger.info({ channelId, waitingTs, phrase }, "Slack waiting message posted");
+    } catch (err) {
+      logger.warn({ err, channelId }, "Failed to post Slack waiting message");
+    }
   }
 
   try {
