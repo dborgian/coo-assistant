@@ -746,7 +746,7 @@ ${JSON.stringify(data, null, 2)}`;
         // Instant tiered notification to assignee based on time to deadline
         if (assignedTo && input.due_date) {
           const [assigneeEmp] = await db
-            .select({ name: employees.name, email: employees.email, googleEmail: employees.googleEmail, slackMemberId: employees.slackMemberId })
+            .select({ name: employees.name, email: employees.email, googleEmail: employees.googleEmail, slackMemberId: employees.slackMemberId, timezone: employees.timezone })
             .from(employees).where(eq(employees.id, assignedTo)).limit(1);
           if (assigneeEmp) {
             const parsedDue = input.due_date ? parseLocalDate(input.due_date, userTz) : null;
@@ -970,7 +970,7 @@ ${JSON.stringify(data, null, 2)}`;
           // Instant tiered notification
           if (notionAssignedTo && notionDue) {
             const [notifEmp] = await db
-              .select({ name: employees.name, email: employees.email, googleEmail: employees.googleEmail, slackMemberId: employees.slackMemberId })
+              .select({ name: employees.name, email: employees.email, googleEmail: employees.googleEmail, slackMemberId: employees.slackMemberId, timezone: employees.timezone })
               .from(employees).where(eq(employees.id, notionAssignedTo)).limit(1);
             if (notifEmp) {
               sendTieredNotification(

@@ -1,5 +1,6 @@
 import type { Bot } from "grammy";
 import { and, eq, inArray, isNotNull } from "drizzle-orm";
+import { config } from "../config.js";
 import { db } from "../models/database.js";
 import { employees, tasks } from "../models/schema.js";
 import { sendEmail } from "./email-manager.js";
@@ -24,14 +25,15 @@ function getTargetLevel(hoursLeft: number): number {
  */
 export async function sendTieredNotification(
   task: { id?: string; title: string; priority: string | null; description: string | null; dueDate: Date },
-  assignee: { name: string; email: string | null; googleEmail?: string | null; slackMemberId: string | null },
+  assignee: { name: string; email: string | null; googleEmail?: string | null; slackMemberId: string | null; timezone?: string | null },
   label = "Reminder",
 ): Promise<void> {
   const hoursLeft = (task.dueDate.getTime() - Date.now()) / 3_600_000;
   if (hoursLeft < 0) return; // overdue — handled by escalation
 
   const assigneeEmail = assignee.email ?? assignee.googleEmail ?? null;
-  const dueStr = task.dueDate.toLocaleString("it-IT", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+  const tz = assignee.timezone ?? config.TIMEZONE ?? "Europe/Rome";
+  const dueStr = task.dueDate.toLocaleString("it-IT", { timeZone: tz, month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 
   let hoursLabel: string;
   if (hoursLeft <= 1) hoursLabel = "meno di 1 ora";
@@ -85,10 +87,10 @@ export async function checkAndSendReminders(bot: Bot): Promise<void> {
     if (targetLevel <= currentLevel) continue; // already sent this checkpoint
 
     // Lookup assignee
-    let emp: { name: string; email: string | null; googleEmail: string | null; slackMemberId: string | null } | null = null;
+    let emp: { name: string; email: string | null; googleEmail: string | null; slackMemberId: string | null; timezone: string | null } | null = null;
     if (task.assignedTo) {
       const [row] = await db
-        .select({ name: employees.name, email: employees.email, googleEmail: employees.googleEmail, slackMemberId: employees.slackMemberId })
+        .select({ name: employees.name, email: employees.email, googleEmail: employees.googleEmail, slackMemberId: employees.slackMemberId, timezone: employees.timezone })
         .from(employees)
         .where(eq(employees.id, task.assignedTo))
         .limit(1);
@@ -96,7 +98,8 @@ export async function checkAndSendReminders(bot: Bot): Promise<void> {
     }
 
     const assigneeName = emp?.name ?? "non assegnato";
-    const dueStr = new Date(task.dueDate!).toLocaleString("it-IT", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+    const empTz = emp?.timezone ?? config.TIMEZONE ?? "Europe/Rome";
+    const dueStr = new Date(task.dueDate!).toLocaleString("it-IT", { timeZone: empTz, month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
     const hoursLabel = hoursLeft <= 1 ? "1 ora" : hoursLeft <= 6 ? "6 ore" : "24 ore";
     const telegramMsg = `<b>⏰ Reminder task</b> — scade tra ${hoursLabel}\n\n<b>${task.title}</b>\nAssegnato a: ${assigneeName}\nScadenza: ${dueStr}\nPriorità: ${task.priority}`;
 

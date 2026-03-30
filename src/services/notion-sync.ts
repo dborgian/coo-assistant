@@ -6,6 +6,30 @@ import { logger } from "../utils/logger.js";
 import { db } from "../models/database.js";
 import { employees } from "../models/schema.js";
 
+/**
+ * Convert "YYYY-MM-DDTHH:mm[:ss]" (local time) to "YYYY-MM-DDTHH:mm:ss+HH:MM" for Notion API.
+ * Notion needs an explicit timezone offset to display the correct time; without it, times are
+ * treated as UTC and shown in the user's Notion account timezone (which may differ from Italy).
+ */
+function toNotionDatetime(dateStr: string): string {
+  if (!dateStr.includes("T")) return dateStr; // date-only — no change needed
+  const tz = config.TIMEZONE || "Europe/Rome";
+  // Normalize to include seconds
+  const normalized = dateStr.split(":").length === 2 ? dateStr + ":00" : dateStr;
+  const [datePart, timePart] = normalized.split("T");
+  const [year, month, day] = datePart.split("-").map(Number);
+  const [hour, minute] = timePart.split(":").map(Number);
+  // Use the actual date to find the correct DST offset
+  const refDate = new Date(Date.UTC(year, month - 1, day, hour, minute));
+  const fmt = new Intl.DateTimeFormat("en-US", { timeZone: tz, timeZoneName: "shortOffset" });
+  const match = fmt.format(refDate).match(/GMT([+-])(\d+)(?::(\d+))?/);
+  if (!match) return normalized;
+  const sign = match[1];
+  const hh = match[2].padStart(2, "0");
+  const mm = (match[3] ?? "00").padStart(2, "0");
+  return `${normalized}${sign}${hh}:${mm}`;
+}
+
 // --- Types ---
 
 export interface NotionTask {
@@ -299,11 +323,7 @@ export async function createNotionTask(
             (n) => (dbInfo.properties[n] as any)?.type === "date",
           ) ?? "Due date")
         : "Due date";
-      // Ensure full datetime format so Notion shows "include time"
-      const dateVal = props.dueDate.includes("T") && props.dueDate.split(":").length === 2
-        ? props.dueDate + ":00"
-        : props.dueDate;
-      properties[datePropName] = { date: { start: dateVal } };
+      properties[datePropName] = { date: { start: toNotionDatetime(props.dueDate) } };
     }
 
     if (props?.assignee) {
@@ -415,11 +435,7 @@ export async function updateNotionTaskProperties(
             (n) => (dbInfo.properties[n] as any)?.type === "date",
           ) ?? "Due date")
         : "Due date";
-      // Ensure full datetime format so Notion shows "include time"
-      const dateVal = updates.dueDate.includes("T") && updates.dueDate.split(":").length === 2
-        ? updates.dueDate + ":00"
-        : updates.dueDate;
-      properties[datePropName] = { date: { start: dateVal } };
+      properties[datePropName] = { date: { start: toNotionDatetime(updates.dueDate) } };
     }
     if (updates.assignee) {
       const notionUserId = await resolveNotionUserId(updates.assignee);
