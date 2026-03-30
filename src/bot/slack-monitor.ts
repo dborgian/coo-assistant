@@ -137,14 +137,13 @@ async function handleSlackQuery(
 
   logger.info({ slackUser: slackUserId, name: user.name, role: user.role, query: text.slice(0, 80) }, "Slack AI query");
 
-  // Send casual waiting message in thread
+  // Send casual waiting message directly in channel (not thread, so it's visible)
   const phrase = WAITING_PHRASES[Math.floor(Math.random() * WAITING_PHRASES.length)];
   let waitingTs: string | undefined;
   if (slackApp && channelId) {
     const waitingMsg = await slackApp.client.chat.postMessage({
       channel: channelId,
       text: phrase,
-      ...(messageTs ? { thread_ts: messageTs } : {}),
     }).catch(() => undefined);
     waitingTs = waitingMsg?.ts as string | undefined;
   }
