@@ -145,6 +145,7 @@ async function handleSlackQuery(
       const waitingMsg = await slackApp.client.chat.postMessage({
         channel: channelId,
         text: phrase,
+        ...(threadTs ? { thread_ts: threadTs } : {}),
       });
       waitingTs = waitingMsg.ts as string | undefined;
       logger.info({ channelId, waitingTs, phrase }, "Slack waiting message posted");
