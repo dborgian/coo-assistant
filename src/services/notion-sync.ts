@@ -333,19 +333,34 @@ export async function updateNotionTaskStatus(
 ): Promise<boolean> {
   const client = getClient();
   try {
-    // Map internal status to Notion status names
     const statusMap: Record<string, string> = {
       done: "Done",
       cancelled: "Done",
       in_progress: "In progress",
       pending: "Not started",
+      not_started: "Not started",
     };
-    const notionStatus = statusMap[status] ?? status;
+    // Normalize: "in progress" → "in_progress", "In Progress" → "in_progress"
+    const normalized = status.toLowerCase().replace(/\s+/g, "_");
+    const notionStatus = statusMap[normalized] ?? status;
+
+    // Discover Status property type (select vs status)
+    let statusType: "status" | "select" = "status";
+    if (config.NOTION_TASKS_DATABASE_ID) {
+      try {
+        const dbInfo = await client.databases.retrieve({ database_id: config.NOTION_TASKS_DATABASE_ID }) as any;
+        if (dbInfo?.properties?.["Status"]?.type === "select") statusType = "select";
+      } catch {
+        // fall back to status type
+      }
+    }
 
     await client.pages.update({
       page_id: notionPageId,
       properties: {
-        Status: { status: { name: notionStatus } },
+        Status: statusType === "select"
+          ? { select: { name: notionStatus } }
+          : { status: { name: notionStatus } },
       },
     });
     return true;
