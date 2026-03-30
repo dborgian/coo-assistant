@@ -9,7 +9,7 @@ import { notifyAssigneeAndOwner } from "../utils/telegram.js";
 import { logger } from "../utils/logger.js";
 
 // Checkpoint levels: 1=24h (email), 2=6h (slack), 3=1h (email+slack)
-function getTargetLevel(hoursLeft: number): number {
+export function getTargetLevel(hoursLeft: number): number {
   if (hoursLeft <= 1) return 3;
   if (hoursLeft <= 6) return 2;
   if (hoursLeft <= 24) return 1;

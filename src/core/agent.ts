@@ -5,7 +5,7 @@ import { db } from "../models/database.js";
 import { clients, dailyReports, employees, messageLogs, tasks } from "../models/schema.js";
 import { logger } from "../utils/logger.js";
 import { getTodayEvents, getTeamEvents } from "../services/calendar-sync.js";
-import { sendTieredNotification } from "../services/task-reminder.js";
+import { sendTieredNotification, getTargetLevel } from "../services/task-reminder.js";
 import { getUnreadImportantEmails, sendEmail, searchEmails, forwardEmail, replyToEmail } from "../services/email-manager.js";
 import { getNotionWorkspaceSummary, isNotionConfigured, createNotionTask, searchNotion, updateNotionTaskStatus, discoverNotionUsers } from "../services/notion-sync.js";
 import { parseDateKeywords, findEmployeeInQuery, getActivityByDateRange, getEmployeeActivity } from "../services/history-query.js";
@@ -754,11 +754,17 @@ ${JSON.stringify(data, null, 2)}`;
           if (assigneeEmp) {
             const parsedDue = input.due_date ? parseLocalDate(input.due_date, input.timezone ?? userTz) : null;
             if (parsedDue) {
+              const hoursLeft = (parsedDue.getTime() - Date.now()) / 3_600_000;
+              const level = getTargetLevel(hoursLeft);
               sendTieredNotification(
                 { id: newTask?.id, title: input.title, priority: input.priority ?? "medium", description: input.description ?? null, dueDate: parsedDue },
                 assigneeEmp,
                 "Nuova task assegnata",
               ).catch((e) => logger.error({ err: e }, "Assignment notification failed"));
+              // Mark reminderLevel so the cron doesn't re-send this checkpoint
+              if (newTask?.id && level > 0) {
+                db.update(tasks).set({ reminderLevel: level }).where(eq(tasks.id, newTask.id)).catch(() => {});
+              }
             }
           }
         }
@@ -976,11 +982,17 @@ ${JSON.stringify(data, null, 2)}`;
               .select({ name: employees.name, email: employees.email, googleEmail: employees.googleEmail, slackMemberId: employees.slackMemberId, timezone: employees.timezone })
               .from(employees).where(eq(employees.id, notionAssignedTo)).limit(1);
             if (notifEmp) {
+              const notionHoursLeft = (notionDue.getTime() - Date.now()) / 3_600_000;
+              const notionLevel = getTargetLevel(notionHoursLeft);
               sendTieredNotification(
                 { id: notionDbTask?.id, title: input.title, priority: input.priority ?? "medium", description: null, dueDate: notionDue },
                 notifEmp,
                 "Nuova task assegnata",
               ).catch((e) => logger.error({ err: e }, "Notion task assignment notification failed"));
+              // Mark reminderLevel so the cron doesn't re-send this checkpoint
+              if (notionDbTask?.id && notionLevel > 0) {
+                db.update(tasks).set({ reminderLevel: notionLevel }).where(eq(tasks.id, notionDbTask.id)).catch(() => {});
+              }
             }
           }
 
