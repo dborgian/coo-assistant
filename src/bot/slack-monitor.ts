@@ -111,6 +111,16 @@ async function resolveSlackUser(slackUserId: string): Promise<SlackAuthUser | nu
   return null;
 }
 
+const WAITING_PHRASES = [
+  "Okay, dammi un attimo...",
+  "Ci penso su un secondo...",
+  "Aspetta, ci sto lavorando...",
+  "Un momento, sto elaborando...",
+  "Fammi controllare...",
+  "Sì sì, arrivo...",
+  "Sto guardando, un sec...",
+];
+
 async function handleSlackQuery(
   text: string,
   slackUserId: string,
@@ -127,14 +137,26 @@ async function handleSlackQuery(
 
   logger.info({ slackUser: slackUserId, name: user.name, role: user.role, query: text.slice(0, 80) }, "Slack AI query");
 
-  // Add hourglass reaction while thinking
-  if (slackApp && channelId && messageTs) {
-    await slackApp.client.reactions.add({ channel: channelId, timestamp: messageTs, name: "hourglass_flowing_sand" }).catch(() => {});
+  // Send casual waiting message in thread
+  const phrase = WAITING_PHRASES[Math.floor(Math.random() * WAITING_PHRASES.length)];
+  let waitingTs: string | undefined;
+  if (slackApp && channelId) {
+    const waitingMsg = await slackApp.client.chat.postMessage({
+      channel: channelId,
+      text: phrase,
+      ...(messageTs ? { thread_ts: messageTs } : {}),
+    }).catch(() => undefined);
+    waitingTs = waitingMsg?.ts as string | undefined;
   }
 
   try {
     const response = await agent.answerQuery(text, user.role, user.employeeId, user.name);
     const reply = response.text || "Operazione completata.";
+
+    // Delete waiting message
+    if (slackApp && channelId && waitingTs) {
+      await slackApp.client.chat.delete({ channel: channelId, ts: waitingTs }).catch(() => {});
+    }
 
     // Split long messages (Slack limit ~4000 chars)
     const chunks = reply.match(/[\s\S]{1,3900}/g) ?? [reply];
@@ -149,6 +171,12 @@ async function handleSlackQuery(
     }
   } catch (err) {
     logger.error({ err, slackUser: slackUserId }, "Slack AI query failed");
+
+    // Delete waiting message on error too
+    if (slackApp && channelId && waitingTs) {
+      await slackApp.client.chat.delete({ channel: channelId, ts: waitingTs }).catch(() => {});
+    }
+
     await say({ text: "Errore nell'elaborazione della richiesta.", ...(threadTs ? { thread_ts: threadTs } : {}) });
     // Replace hourglass with X on error
     if (slackApp && channelId && messageTs) {
