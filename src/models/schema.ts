@@ -58,6 +58,7 @@ export const tasks = pgTable("tasks", {
   dueDate: timestamp("due_date", { withTimezone: true }),
   reminderAt: timestamp("reminder_at", { withTimezone: true }),
   reminderSent: boolean("reminder_sent").default(false),
+  reminderLevel: integer("reminder_level").default(0), // 0=none, 1=24h sent, 2=6h sent, 3=1h sent
   source: text("source"), // manual, notion, calendar
   externalId: text("external_id"),
   // Scheduling
