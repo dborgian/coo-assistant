@@ -353,11 +353,11 @@ ${JSON.stringify(data, null, 2)}`;
     },
     {
       name: "notion_action",
-      description: "Interact with Notion workspace. Create tasks, update existing tasks (status, deadline, assignee, priority), or search for pages/databases.",
+      description: "Interact with Notion workspace. Create tasks, update existing tasks (status, deadline, assignee, priority), delete/archive tasks, or search for pages/databases.",
       input_schema: {
         type: "object" as const,
         properties: {
-          action: { type: "string", enum: ["create_task", "update_task", "search"], description: "Action to perform" },
+          action: { type: "string", enum: ["create_task", "update_task", "search", "delete_task"], description: "Action to perform" },
           query: { type: "string", description: "Search query (for search action)" },
           title: { type: "string", description: "Task title (for create_task) or task name to find (for update_task)" },
           status: { type: "string", description: "Task status (e.g. 'In progress', 'Done', 'Not started')" },
@@ -1041,6 +1041,21 @@ ${JSON.stringify(data, null, 2)}`;
             if (input.assignee) results.push(ok ? `assegnato a ${input.assignee}` : `assegnazione a ${input.assignee} fallita (utente Notion non trovato?)`);
           }
           return results.length ? `Task Notion "${found[0]?.title}" aggiornato: ${results.join(", ")}.` : "Nessun campo da aggiornare specificato.";
+        }
+        if (action === "delete_task") {
+          if (!input.title) return "Titolo del task richiesto per eliminare da Notion.";
+          const found = await db.select({ id: tasks.id, externalId: tasks.externalId, title: tasks.title })
+            .from(tasks)
+            .where(ilike(tasks.title, `%${input.title}%`))
+            .limit(1);
+          const notionId = found[0]?.externalId?.replace(/^notion(-done)?:/, "");
+          if (!notionId) return `Task "${input.title}" non trovato su Notion (externalId mancante).`;
+
+          const ok = await archiveNotionPage(notionId);
+          if (ok && found[0]?.id) {
+            await db.delete(tasks).where(eq(tasks.id, found[0].id));
+          }
+          return ok ? `Task "${found[0]?.title}" eliminato da Notion.` : `Eliminazione fallita per "${input.title}".`;
         }
         return `Azione Notion "${action}" non riconosciuta.`;
       }
