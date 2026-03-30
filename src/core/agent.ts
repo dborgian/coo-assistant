@@ -361,7 +361,7 @@ ${JSON.stringify(data, null, 2)}`;
           title: { type: "string", description: "Task title (for create_task) or task name to find (for update_task)" },
           status: { type: "string", description: "Task status (e.g. 'In progress', 'Done', 'Not started')" },
           priority: { type: "string", description: "Task priority (e.g. 'High', 'Medium', 'Low')" },
-          due_date: { type: "string", description: "Due date YYYY-MM-DD" },
+          due_date: { type: "string", description: "Due date in YYYY-MM-DD or YYYY-MM-DDTHH:mm format (e.g. 2026-03-30T18:00). Always include time if the user specifies or implies one (e.g. 'tra 3 ore', 'alle 14')." },
           assignee: { type: "string", description: "Employee name to assign the task to" },
         },
         required: ["action"],
