@@ -12,7 +12,52 @@ function getTargetLevel(hoursLeft: number): number {
   if (hoursLeft <= 1) return 3;
   if (hoursLeft <= 6) return 2;
   if (hoursLeft <= 24) return 1;
-  return 0; // >24h: no reminder yet
+  return 0; // >24h: email only (assignment notification case)
+}
+
+/**
+ * Send a tiered notification to a task assignee based on hours left to deadline.
+ * > 24h  → Email only
+ * 6–24h  → Email only
+ * 1–6h   → Slack only
+ * ≤ 1h   → Email + Slack
+ */
+export async function sendTieredNotification(
+  task: { id?: string; title: string; priority: string | null; description: string | null; dueDate: Date },
+  assignee: { name: string; email: string | null; googleEmail?: string | null; slackMemberId: string | null },
+  label = "Reminder",
+): Promise<void> {
+  const hoursLeft = (task.dueDate.getTime() - Date.now()) / 3_600_000;
+  if (hoursLeft < 0) return; // overdue — handled by escalation
+
+  const assigneeEmail = assignee.email ?? assignee.googleEmail ?? null;
+  const dueStr = task.dueDate.toLocaleString("it-IT", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+
+  let hoursLabel: string;
+  if (hoursLeft <= 1) hoursLabel = "meno di 1 ora";
+  else if (hoursLeft <= 6) hoursLabel = `${Math.round(hoursLeft)} ore`;
+  else if (hoursLeft <= 24) hoursLabel = "24 ore";
+  else hoursLabel = `${Math.round(hoursLeft / 24)} giorni`;
+
+  const emailSubject = `${label}: "${task.title}" — scade tra ${hoursLabel}`;
+  const emailBody =
+    `Ciao ${assignee.name},\n\n` +
+    `Il task "${task.title}" scade il ${dueStr} (tra ${hoursLabel}).\n\n` +
+    `Priorità: ${task.priority ?? "medium"}\n` +
+    (task.description ? `\nDescrizione: ${task.description}\n` : "") +
+    `\nAggiorna lo stato o completalo il prima possibile.\n\nGrazie,\nCOO Assistant`;
+  const slackMsg = `⏰ ${label}: il task *"${task.title}"* scade tra *${hoursLabel}* (${dueStr}).`;
+
+  // Tier logic: >24h and 6-24h → email; 1-6h → slack; ≤1h → both
+  const sendEmailNotif = hoursLeft > 6 || hoursLeft <= 1;
+  const sendSlack = hoursLeft <= 6;
+
+  if (sendEmailNotif && assigneeEmail) {
+    await sendEmail(assigneeEmail, emailSubject, emailBody);
+  }
+  if (sendSlack && assignee.slackMemberId && task.id) {
+    await sendSlackTaskNotification(assignee.slackMemberId, slackMsg, task.id);
+  }
 }
 
 export async function checkAndSendReminders(bot: Bot): Promise<void> {
@@ -51,36 +96,16 @@ export async function checkAndSendReminders(bot: Bot): Promise<void> {
     }
 
     const assigneeName = emp?.name ?? "non assegnato";
-    const assigneeEmail = emp?.email ?? emp?.googleEmail ?? null;
-    const assigneeSlackId = emp?.slackMemberId ?? null;
-
     const dueStr = new Date(task.dueDate!).toLocaleString("it-IT", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
     const hoursLabel = hoursLeft <= 1 ? "1 ora" : hoursLeft <= 6 ? "6 ore" : "24 ore";
-
-    const emailSubject = `Reminder task: "${task.title}" — scade tra ${hoursLabel}`;
-    const emailBody = `Ciao ${assigneeName},\n\nIl task "${task.title}" scade il ${dueStr} (tra ${hoursLabel}).\n\nPriorità: ${task.priority}\n${task.description ? `\nDescrizione: ${task.description}\n` : ""}\nAggiorna lo stato o completalo il prima possibile.\n\nGrazie,\nCOO Assistant`;
-    const slackMsg = `⏰ Reminder: il task *"${task.title}"* scade tra *${hoursLabel}* (${dueStr}). Aggiorna lo stato.`;
     const telegramMsg = `<b>⏰ Reminder task</b> — scade tra ${hoursLabel}\n\n<b>${task.title}</b>\nAssegnato a: ${assigneeName}\nScadenza: ${dueStr}\nPriorità: ${task.priority}`;
 
     try {
-      if (targetLevel === 1) {
-        // 24h: Email only
-        if (assigneeEmail) {
-          await sendEmail(assigneeEmail, emailSubject, emailBody);
-        }
-      } else if (targetLevel === 2) {
-        // 6h: Slack only
-        if (assigneeSlackId) {
-          await sendSlackTaskNotification(assigneeSlackId, slackMsg, task.id);
-        }
-      } else if (targetLevel === 3) {
-        // 1h: Email + Slack
-        if (assigneeEmail) {
-          await sendEmail(assigneeEmail, emailSubject, emailBody);
-        }
-        if (assigneeSlackId) {
-          await sendSlackTaskNotification(assigneeSlackId, slackMsg, task.id);
-        }
+      if (emp) {
+        await sendTieredNotification(
+          { id: task.id, title: task.title, priority: task.priority, description: task.description, dueDate: new Date(task.dueDate!) },
+          emp,
+        );
       }
 
       // Always notify owner via Telegram

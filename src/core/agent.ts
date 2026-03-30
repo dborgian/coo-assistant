@@ -5,6 +5,7 @@ import { db } from "../models/database.js";
 import { clients, dailyReports, employees, messageLogs, tasks } from "../models/schema.js";
 import { logger } from "../utils/logger.js";
 import { getTodayEvents, getTeamEvents } from "../services/calendar-sync.js";
+import { sendTieredNotification } from "../services/task-reminder.js";
 import { getUnreadImportantEmails, sendEmail, searchEmails, forwardEmail, replyToEmail } from "../services/email-manager.js";
 import { getNotionWorkspaceSummary, isNotionConfigured, createNotionTask, searchNotion, updateNotionTaskStatus, discoverNotionUsers } from "../services/notion-sync.js";
 import { parseDateKeywords, findEmployeeInQuery, getActivityByDateRange, getEmployeeActivity } from "../services/history-query.js";
@@ -739,6 +740,23 @@ ${JSON.stringify(data, null, 2)}`;
         // Sync to Google Tasks
         if (newTask) {
           createGoogleTask(newTask.id).catch(() => {});
+        }
+
+        // Instant tiered notification to assignee based on time to deadline
+        if (assignedTo && input.due_date) {
+          const [assigneeEmp] = await db
+            .select({ name: employees.name, email: employees.email, googleEmail: employees.googleEmail, slackMemberId: employees.slackMemberId })
+            .from(employees).where(eq(employees.id, assignedTo)).limit(1);
+          if (assigneeEmp) {
+            const parsedDue = input.due_date ? parseLocalDate(input.due_date, userTz) : null;
+            if (parsedDue) {
+              sendTieredNotification(
+                { id: newTask?.id, title: input.title, priority: input.priority ?? "medium", description: input.description ?? null, dueDate: parsedDue },
+                assigneeEmp,
+                "Nuova task assegnata",
+              ).catch((e) => logger.error({ err: e }, "Assignment notification failed"));
+            }
+          }
         }
 
         // Also notify on Slack
