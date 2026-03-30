@@ -1530,9 +1530,15 @@ Genera 5-10 task concreti e actionable.`,
     role: AccessRole,
     employeeId: string | null,
     userAuth?: GoogleAuth | null,
+    userTz?: string,
   ): Promise<Record<string, unknown>> {
+    const tz = userTz || config.TIMEZONE || "Europe/Rome";
+    // Format current time in the user's local timezone (not UTC).
+    // This lets the AI compute relative times like "tra 3 ore" without timezone math.
+    const localNow = new Date().toLocaleString("sv-SE", { timeZone: tz }).replace(" ", "T");
     const context: Record<string, unknown> = {
-      current_datetime: new Date().toISOString(),
+      current_datetime: localNow, // e.g. "2026-03-30T15:30:00" in user's local time
+      timezone: tz,
     };
 
     if (role === "viewer") {
@@ -1621,7 +1627,7 @@ Genera 5-10 task concreti e actionable.`,
     }
 
     // Build context based on role
-    const context = await this.buildContextForRole(query, userRole, employeeId, userAuth);
+    const context = await this.buildContextForRole(query, userRole, employeeId, userAuth, userTz);
 
     // Filter tools based on role
     const allowedNames = getAllowedToolNames(userRole);
