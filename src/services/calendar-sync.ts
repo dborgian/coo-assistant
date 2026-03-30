@@ -1,4 +1,5 @@
 import { google } from "googleapis";
+import { eq } from "drizzle-orm";
 import type { Bot } from "grammy";
 import { config } from "../config.js";
 import { getGoogleAuth, isGoogleConfigured } from "../core/google-auth.js";
@@ -33,7 +34,7 @@ export interface CalendarEvent {
   organizer?: string;
 }
 
-export async function getTodayEvents(authOverride?: GoogleAuth | null): Promise<CalendarEvent[]> {
+export async function getTodayEvents(authOverride?: GoogleAuth | null, calendarId = "primary"): Promise<CalendarEvent[]> {
   const auth = authOverride ?? getGoogleAuth();
   if (!auth) return [];
 
@@ -47,7 +48,7 @@ export async function getTodayEvents(authOverride?: GoogleAuth | null): Promise<
 
   try {
     const res = await calendar.events.list({
-      calendarId: "primary",
+      calendarId,
       timeMin: startOfDay.toISOString(),
       timeMax: endOfDay.toISOString(),
       singleEvents: true,
@@ -68,6 +69,31 @@ export async function getTodayEvents(authOverride?: GoogleAuth | null): Promise<
     logger.error({ err }, "Failed to fetch calendar events");
     return [];
   }
+}
+
+export async function getTeamEvents(): Promise<{ employee: string; events: CalendarEvent[] }[]> {
+  const auth = getGoogleAuth();
+  if (!auth) return [];
+
+  const { db } = await import("../models/database.js");
+  const { employees } = await import("../models/schema.js");
+
+  const emps = await db
+    .select({ name: employees.name, googleEmail: employees.googleEmail })
+    .from(employees)
+    .where(eq(employees.isActive, true));
+
+  const results: { employee: string; events: CalendarEvent[] }[] = [];
+  for (const emp of emps) {
+    if (!emp.googleEmail) continue;
+    try {
+      const events = await getTodayEvents(auth, emp.googleEmail);
+      results.push({ employee: emp.name, events });
+    } catch (err) {
+      logger.warn({ err, employee: emp.name }, "Failed to fetch calendar for employee");
+    }
+  }
+  return results;
 }
 
 function detectConflicts(events: CalendarEvent[]): [CalendarEvent, CalendarEvent][] {

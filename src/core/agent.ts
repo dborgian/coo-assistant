@@ -4,12 +4,12 @@ import { config } from "../config.js";
 import { db } from "../models/database.js";
 import { clients, dailyReports, employees, messageLogs, tasks } from "../models/schema.js";
 import { logger } from "../utils/logger.js";
-import { getTodayEvents } from "../services/calendar-sync.js";
+import { getTodayEvents, getTeamEvents } from "../services/calendar-sync.js";
 import { getUnreadImportantEmails, sendEmail, searchEmails, forwardEmail, replyToEmail } from "../services/email-manager.js";
 import { getNotionWorkspaceSummary, isNotionConfigured, createNotionTask, searchNotion, updateNotionTaskStatus, discoverNotionUsers } from "../services/notion-sync.js";
 import { parseDateKeywords, findEmployeeInQuery, getActivityByDateRange, getEmployeeActivity } from "../services/history-query.js";
 import { listDriveFiles, searchDriveFiles, uploadFileToDrive } from "../services/drive-manager.js";
-import { getAuthForEmployee } from "./google-auth.js";
+import { getAuthForEmployee, getGoogleAuth } from "./google-auth.js";
 import type { GoogleAuth } from "./google-auth.js";
 import { generateDailyReportPdf, generateEmployeeReportPdf, generateWeeklyReportPdf, type DailyReportData } from "../services/pdf-generator.js";
 import { sendSlackMessage, getNotificationsChannel } from "../bot/slack-monitor.js";
@@ -418,11 +418,12 @@ ${JSON.stringify(data, null, 2)}`;
     },
     {
       name: "get_calendar_events",
-      description: "Get calendar events for today. Use this when the user asks about their schedule or meetings.",
+      description: "Get calendar events for today. Can fetch for a specific employee by name, or for the entire team.",
       input_schema: {
         type: "object" as const,
         properties: {
           date: { type: "string", description: "Date YYYY-MM-DD (default: today)" },
+          employee_name: { type: "string", description: "Employee name to get their calendar, or 'team'/'all'/'tutti' for all employees' calendars" },
         },
         required: [],
       },
@@ -1047,14 +1048,41 @@ ${JSON.stringify(data, null, 2)}`;
       }
 
       if (name === "get_calendar_events") {
+        const displayTz = userTz || config.TIMEZONE;
+        const formatEvents = (evs: Awaited<ReturnType<typeof getTodayEvents>>) =>
+          evs.map((e) => {
+            const start = e.start ? new Date(e.start).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", timeZone: displayTz }) : "TBD";
+            const end = e.end ? new Date(e.end).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", timeZone: displayTz }) : "";
+            return `  - ${start}${end ? `-${end}` : ""}: ${e.summary}${e.location ? ` (${e.location})` : ""}`;
+          }).join("\n");
+
+        const empName = (input.employee_name as string | undefined)?.toLowerCase().trim();
+        if (empName && ["team", "all", "tutti", "everyone"].includes(empName)) {
+          const teamEvents = await getTeamEvents();
+          if (!teamEvents.length) return "Nessun dipendente con calendario configurato.";
+          const lines: string[] = [];
+          for (const { employee, events } of teamEvents) {
+            lines.push(`**${employee}:**`);
+            lines.push(events.length ? formatEvents(events) : "  Nessun evento.");
+          }
+          return lines.join("\n");
+        }
+
+        if (empName) {
+          const [emp] = await db.select({ name: employees.name, googleEmail: employees.googleEmail })
+            .from(employees)
+            .where(sql`${employees.name} ILIKE ${"%" + input.employee_name + "%"}`)
+            .limit(1);
+          if (!emp?.googleEmail) return `Nessun dipendente trovato o calendario non configurato per "${input.employee_name}".`;
+          const auth = getGoogleAuth();
+          const events = await getTodayEvents(auth, emp.googleEmail);
+          if (!events.length) return `Nessun evento nel calendario di ${emp.name} oggi.`;
+          return `**${emp.name}:**\n${formatEvents(events)}`;
+        }
+
         const events = await getTodayEvents(userAuth);
         if (!events.length) return "Nessun evento in calendario per oggi.";
-        const displayTz = userTz || config.TIMEZONE;
-        return events.map((e) => {
-          const start = e.start ? new Date(e.start).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", timeZone: displayTz }) : "TBD";
-          const end = e.end ? new Date(e.end).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", timeZone: displayTz }) : "";
-          return `- ${start}${end ? `-${end}` : ""}: ${e.summary}${e.location ? ` (${e.location})` : ""}`;
-        }).join("\n");
+        return formatEvents(events);
       }
 
       if (name === "snooze_escalation") {
