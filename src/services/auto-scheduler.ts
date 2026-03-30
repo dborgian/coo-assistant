@@ -139,6 +139,7 @@ async function createCalendarEvent(
   start: Date,
   end: Date,
   calendarId: string = "primary",
+  description?: string,
 ): Promise<string | null> {
   const auth = getGoogleAuth();
   if (!auth) return null;
@@ -152,7 +153,7 @@ async function createCalendarEvent(
         start: { dateTime: start.toISOString(), timeZone: config.TIMEZONE },
         end: { dateTime: end.toISOString(), timeZone: config.TIMEZONE },
         colorId: "9", // Blueberry
-        description: "Auto-scheduled by COO Assistant",
+        description: description ?? "Auto-scheduled by COO Assistant",
       },
     });
     return res.data.id ?? null;
@@ -257,7 +258,7 @@ export async function autoScheduleTasks(bot: Bot): Promise<void> {
 
         const slot = chunkSlots[0];
         const eventId = await withRetry(
-          () => createCalendarEvent(`${task.title} (${c + 1}/${chunks})`, slot.start, slot.end, calendarId),
+          () => createCalendarEvent(`${task.title} (${c + 1}/${chunks})`, slot.start, slot.end, calendarId, task.description ?? undefined),
           "calendar-create",
         ).catch(() => null);
 
@@ -297,7 +298,7 @@ export async function autoScheduleTasks(bot: Bot): Promise<void> {
 
     const slot = freeSlots[0];
     const eventId = await withRetry(
-      () => createCalendarEvent(task.title, slot.start, slot.end, calendarId),
+      () => createCalendarEvent(task.title, slot.start, slot.end, calendarId, task.description ?? undefined),
       "calendar-create",
     ).catch(() => null);
 

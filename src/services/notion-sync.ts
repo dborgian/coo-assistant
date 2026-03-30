@@ -268,7 +268,7 @@ export async function searchNotion(query: string): Promise<Array<{ title: string
 
 export async function createNotionTask(
   title: string,
-  props?: { status?: string; priority?: string; dueDate?: string; assignee?: string },
+  props?: { status?: string; priority?: string; dueDate?: string; assignee?: string; description?: string },
 ): Promise<string | null> {
   if (!config.NOTION_TASKS_DATABASE_ID) return null;
 
@@ -343,6 +343,14 @@ export async function createNotionTask(
       parent: { database_id: config.NOTION_TASKS_DATABASE_ID },
       properties,
     }) as any;
+
+    // Add description as page body if provided
+    if (props?.description && page.id) {
+      await client.blocks.children.append({
+        block_id: page.id,
+        children: [{ paragraph: { rich_text: [{ text: { content: props.description } }] } }] as any,
+      }).catch((e: unknown) => logger.warn({ err: e, pageId: page.id }, "Failed to append description block to Notion page"));
+    }
 
     return page.url ?? null;
   } catch (err) {

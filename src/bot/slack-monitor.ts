@@ -13,6 +13,7 @@ import type { AccessRole } from "./auth.js";
 
 let slackApp: SlackApp | null = null;
 let botRef: Bot | null = null;
+let slackBotUserId: string | null = null;
 
 // Cache user/channel names to avoid Slack API rate limits
 const userNameCache = new Map<string, string>();
@@ -239,22 +240,7 @@ export async function startSlackMonitor(bot: Bot): Promise<boolean> {
     }
   });
 
-  // App mention handler: @COO-Assistant in channels (kept for backwards compat)
-  slackApp.event("app_mention", async ({ event, say }) => {
-    try {
-      const text = (event.text || "").replace(/<@[A-Z0-9]+>/g, "").trim();
-      if (!event.user) return;
-      if (!text) {
-        await say({ text: "Ciao! Chiedimi quello che vuoi.", thread_ts: event.ts });
-        return;
-      }
-      await handleSlackQuery(text, event.user, say, event.channel, event.ts, event.ts);
-    } catch (err) {
-      logger.error({ err }, "Error handling Slack app_mention");
-    }
-  });
-
-  // Message handler: monitors channels + handles DMs + proactive responses
+  // Message handler: monitors channels + handles DMs + responds on @mention
   slackApp.message(async ({ message, client, say }) => {
     try {
       const msg = message as any;
@@ -273,13 +259,20 @@ export async function startSlackMonitor(bot: Bot): Promise<boolean> {
         return;
       }
 
-      // Channel messages — respond proactively to all messages in channels where the bot is present
+      // Channel messages — always run monitoring pipeline, only respond if @mentioned
       if (userId) {
         // Run monitoring pipeline in parallel (logging, classification, Telegram notification)
         onSlackMessage(message, client).catch(() => {});
 
-        // Respond to the message via AI
-        await handleSlackQuery(text, userId, say, channelId, msgTs, msg.thread_ts ?? msgTs);
+        // Only respond with AI if the bot is @mentioned
+        if (!slackBotUserId || !text.includes(`<@${slackBotUserId}>`)) return;
+
+        const cleanText = text.replace(/<@[A-Z0-9]+>/g, "").trim();
+        if (!cleanText) {
+          await say({ text: "Ciao! Chiedimi quello che vuoi.", thread_ts: msgTs });
+          return;
+        }
+        await handleSlackQuery(cleanText, userId, say, channelId, msgTs, msg.thread_ts ?? msgTs);
       }
     } catch (err) {
       logger.error({ err }, "Error processing Slack message");
@@ -333,6 +326,16 @@ export async function startSlackMonitor(bot: Bot): Promise<boolean> {
   });
 
   await slackApp.start();
+
+  // Cache bot user ID so the message handler can filter @mentions
+  try {
+    const authResult = await slackApp.client.auth.test();
+    slackBotUserId = (authResult.user_id as string | undefined) ?? null;
+    logger.info({ slackBotUserId }, "Slack bot user ID cached");
+  } catch (err) {
+    logger.warn({ err }, "Failed to cache Slack bot user ID — @mention filter disabled");
+  }
+
   logger.info(
     { monitoredChannels: config.MONITORED_SLACK_CHANNELS },
     "Slack monitoring active",

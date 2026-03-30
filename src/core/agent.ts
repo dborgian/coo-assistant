@@ -360,6 +360,7 @@ ${JSON.stringify(data, null, 2)}`;
           action: { type: "string", enum: ["create_task", "update_task", "search", "delete_task"], description: "Action to perform" },
           query: { type: "string", description: "Search query (for search action)" },
           title: { type: "string", description: "Task title (for create_task) or task name to find (for update_task)" },
+          description: { type: "string", description: "Task description / body text (for create_task)" },
           status: { type: "string", description: "Task status (e.g. 'In progress', 'Done', 'Not started')" },
           priority: { type: "string", description: "Task priority (e.g. 'High', 'Medium', 'Low')" },
           due_date: { type: "string", description: "Due date in YYYY-MM-DD or YYYY-MM-DDTHH:mm format (e.g. 2026-03-30T18:00). Always include time if the user specifies or implies one (e.g. 'tra 3 ore', 'alle 14')." },
@@ -752,6 +753,7 @@ ${JSON.stringify(data, null, 2)}`;
             assignee: input.assigned_to_name,
             dueDate: input.due_date,
             priority: input.priority,
+            description: input.description,
           }).then((url) => {
             if (url && newTask?.id) {
               const pageId = url.match(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/)?.[0]
@@ -970,7 +972,7 @@ ${JSON.stringify(data, null, 2)}`;
         if (action === "create_task") {
           if (!input.title) return "Titolo richiesto per creare un task su Notion.";
           const url = await createNotionTask(input.title, {
-            status: input.status, priority: input.priority, dueDate: input.due_date, assignee: input.assignee,
+            status: input.status, priority: input.priority, dueDate: input.due_date, assignee: input.assignee, description: input.description,
           });
 
           // Mirror in internal DB so reminders/escalation/notifications work
@@ -985,6 +987,7 @@ ${JSON.stringify(data, null, 2)}`;
             ?? url?.match(/([a-f0-9]{32})/)?.[1];
           const [notionDbTask] = await db.insert(tasks).values({
             title: input.title,
+            description: input.description ?? null,
             assignedTo: notionAssignedTo,
             dueDate: notionDue,
             priority: input.priority ?? "medium",
@@ -1188,6 +1191,7 @@ ${JSON.stringify(data, null, 2)}`;
             priority: input.new_priority,
             dueDate: input.new_due_date,
             assignee: input.new_assigned_to,
+            description: input.new_description,
           }).catch((e) => logger.error({ err: e, notionPageId }, "Notion property sync on edit failed"));
         }
         // Trigger reschedule if priority or deadline changed and task was scheduled
@@ -1383,7 +1387,7 @@ ${JSON.stringify(data, null, 2)}`;
                       start: { dateTime: slot.start.toISOString() },
                       end: { dateTime: slot.end.toISOString() },
                       colorId: "9",
-                      description: "Auto-scheduled by COO Assistant",
+                      description: task.description ?? "Auto-scheduled by COO Assistant",
                     },
                   });
                   await db.update(tasks).set({
