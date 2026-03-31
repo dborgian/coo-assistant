@@ -35,13 +35,14 @@ function requireRole(user: SlackAuthUser | null, ...roles: string[]): boolean {
 export function registerSlashCommands(slackApp: SlackApp, resolveUser: ResolveFn): void {
 
   // /coo-dashboard — interactive dashboard with Block Kit buttons
-  slackApp.command("/coo-dashboard", async ({ ack, command, respond }) => {
+  // Must use client.chat.postMessage (not respond) so the message TS is editable by action handlers
+  slackApp.command("/coo-dashboard", async ({ ack, command, client, respond }) => {
     await ack();
     try {
       const user = await resolveUser(command.user_id);
       if (!user) { await respond("Non sei registrato nel sistema."); return; }
       const blocks = await buildDashboardBlocks(user.role, user.employeeId);
-      await respond({ text: "COO Dashboard", blocks, response_type: "in_channel" });
+      await client.chat.postMessage({ channel: command.channel_id, text: "COO Dashboard", blocks });
     } catch (err) {
       logger.error({ err }, "/coo-dashboard failed");
       await respond("Errore nel caricamento del dashboard.");
