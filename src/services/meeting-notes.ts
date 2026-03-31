@@ -1,16 +1,144 @@
 import { google } from "googleapis";
+import { eq, and, sql } from "drizzle-orm";
 import { agent } from "../core/agent.js";
 import { config } from "../config.js";
+import { db } from "../models/database.js";
+import { intelligenceEvents, employees } from "../models/schema.js";
 import { getGoogleAuth, isGoogleConfigured } from "../core/google-auth.js";
+import { sendEmail } from "./email-manager.js";
+import { createNotionMeetingAction } from "./notion-sync.js";
+import { readGoogleDocText } from "./google-docs-manager.js";
 import { sendSlackMessage, getNotificationsChannel } from "../bot/slack-monitor.js";
-import { createMeetingDoc } from "./google-docs-manager.js";
 import { logger } from "../utils/logger.js";
 
-/** Track meetings we've already processed */
-const processedMeetings = new Set<string>();
+interface ActionItem {
+  title: string;
+  assignee?: string;
+  dueDate?: string;
+}
+
+interface ParsedNotes {
+  summary: string;
+  actionItems: ActionItem[];
+}
+
+async function isAlreadyProcessed(calendarEventId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: intelligenceEvents.id })
+    .from(intelligenceEvents)
+    .where(
+      and(
+        eq(intelligenceEvents.type, "meeting_notes"),
+        sql`${intelligenceEvents.metadata}->>'calendarEventId' = ${calendarEventId}`,
+      ),
+    )
+    .limit(1);
+  return !!row;
+}
+
+async function markAsProcessed(calendarEventId: string, driveFileId: string, meetingTitle: string): Promise<void> {
+  await db.insert(intelligenceEvents).values({
+    type: "meeting_notes",
+    content: meetingTitle,
+    status: "active",
+    metadata: { calendarEventId, driveFileId },
+  });
+}
+
+async function parseNotesWithAI(docContent: string, meetingTitle: string, attendeeNames: string): Promise<ParsedNotes | null> {
+  const prompt = `Analizza queste note di meeting e restituisci un JSON con questa struttura esatta:
+{"summary": "riassunto in 2-3 frasi", "actionItems": [{"title": "cosa fare", "assignee": "nome o null", "dueDate": "YYYY-MM-DD o null"}]}
+
+Meeting: ${meetingTitle}
+Partecipanti: ${attendeeNames}
+
+NOTE:
+${docContent.slice(0, 6000)}
+
+Rispondi SOLO con il JSON, nessun testo prima o dopo.`;
+
+  try {
+    const raw = await agent.think(prompt);
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    return JSON.parse(match[0]) as ParsedNotes;
+  } catch (err) {
+    logger.warn({ err }, "Failed to parse meeting notes JSON");
+    return null;
+  }
+}
+
+async function findGeminiDoc(auth: any, event: any): Promise<string | null> {
+  // Primary: check Calendar event attachments (Gemini notes)
+  const attachments: any[] = event.attachments ?? [];
+  const geminiDoc = attachments.find(
+    (a: any) => a.mimeType === "application/vnd.google-apps.document",
+  );
+  if (geminiDoc?.fileId) return geminiDoc.fileId;
+
+  // Fallback: search Drive for a Doc created in the last 3 hours matching meeting title
+  try {
+    const drive = google.drive({ version: "v3", auth });
+    const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+    const safeTitle = (event.summary ?? "").replace(/'/g, "\\'").slice(0, 60);
+    const driveRes = await drive.files.list({
+      q: `name contains '${safeTitle}' and mimeType = 'application/vnd.google-apps.document' and createdTime > '${threeHoursAgo}'`,
+      fields: "files(id, name)",
+      pageSize: 3,
+    });
+    return driveRes.data.files?.[0]?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function sendMeetingEmail(
+  attendeeEmails: string[],
+  meetingTitle: string,
+  dateStr: string,
+  parsed: ParsedNotes,
+): Promise<void> {
+  const actionItemsText = parsed.actionItems.length
+    ? parsed.actionItems
+        .map((a, i) => {
+          let line = `${i + 1}. ${a.title}`;
+          if (a.assignee) line += ` — ${a.assignee}`;
+          if (a.dueDate) line += ` (scade ${a.dueDate})`;
+          return line;
+        })
+        .join("\n")
+    : "Nessun action item identificato.";
+
+  const body = `Ciao,
+
+di seguito il riepilogo del meeting "${meetingTitle}" del ${dateStr}.
+
+─────────────────────────────
+RIASSUNTO
+─────────────────────────────
+${parsed.summary}
+
+─────────────────────────────
+ACTION ITEMS
+─────────────────────────────
+${actionItemsText}
+
+─────────────────────────────
+
+Questo messaggio è stato generato automaticamente dal COO Assistant.`;
+
+  const subject = `Riepilogo meeting — ${meetingTitle} — ${dateStr}`;
+
+  for (const email of attendeeEmails) {
+    await sendEmail(email, subject, body).catch((err) =>
+      logger.warn({ err, email }, "Failed to send meeting summary email"),
+    );
+  }
+}
 
 /**
- * Check for meetings that ended recently and generate notes.
+ * Check for Google Meet meetings that ended recently, read Gemini notes,
+ * send email summary to attendees, and create Notion action items.
  * Scheduled every 30 minutes.
  */
 export async function checkRecentMeetings(): Promise<void> {
@@ -21,12 +149,12 @@ export async function checkRecentMeetings(): Promise<void> {
 
   const calendar = google.calendar({ version: "v3", auth });
   const now = new Date();
-  const thirtyMinAgo = new Date(now.getTime() - 30 * 60 * 1000);
+  const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000);
 
   try {
     const res = await calendar.events.list({
       calendarId: "primary",
-      timeMin: new Date(now.getTime() - 2 * 60 * 60 * 1000).toISOString(), // 2 hours back
+      timeMin: twoHoursAgo.toISOString(),
       timeMax: now.toISOString(),
       singleEvents: true,
       orderBy: "startTime",
@@ -36,82 +164,90 @@ export async function checkRecentMeetings(): Promise<void> {
     const events = res.data.items ?? [];
 
     for (const event of events) {
-      if (!event.id || processedMeetings.has(event.id)) continue;
+      if (!event.id) continue;
+
+      // Only process Google Meet events
+      if (!event.conferenceData) continue;
 
       const endTime = event.end?.dateTime ? new Date(event.end.dateTime) : null;
-      if (!endTime || endTime > now || endTime < thirtyMinAgo) continue;
+      if (!endTime || endTime > now) continue;
 
-      // Meeting ended in last 30 min
+      // Skip already processed
+      if (await isAlreadyProcessed(event.id)) continue;
+
       const title = event.summary ?? "Meeting";
-      const attendees = (event.attendees ?? []).map((a) => a.displayName ?? a.email ?? "?").join(", ");
-      const date = endTime.toLocaleDateString("it-IT");
+      const dateStr = endTime.toLocaleDateString("it-IT");
+      const dateISO = endTime.toISOString().split("T")[0];
 
-      processedMeetings.add(event.id);
+      // Attendees: emails for sending, names for AI context
+      const attendees = event.attendees ?? [];
+      const attendeeEmails = attendees
+        .map((a: any) => a.email as string)
+        .filter((e: string) => e && !e.includes("resource.calendar.google.com"));
+      const attendeeNames = attendees
+        .map((a: any) => a.displayName ?? a.email ?? "?")
+        .join(", ");
 
-      // Try to find a transcript in Google Drive
-      const drive = google.drive({ version: "v3", auth });
-      let transcript: string | null = null;
-
-      try {
-        const driveRes = await drive.files.list({
-          q: `name contains '${title.replace(/'/g, "\\'")}' and mimeType = 'text/plain' and modifiedTime > '${thirtyMinAgo.toISOString()}'`,
-          fields: "files(id, name)",
-          pageSize: 1,
-        });
-
-        const transcriptFile = driveRes.data.files?.[0];
-        if (transcriptFile?.id) {
-          const content = await drive.files.get(
-            { fileId: transcriptFile.id, alt: "media" },
-            { responseType: "text" },
-          );
-          transcript = typeof content.data === "string" ? content.data : String(content.data);
-        }
-      } catch {
-        // No transcript found — that's ok
+      // Find Gemini notes Doc
+      const docId = await findGeminiDoc(auth, event);
+      if (!docId) {
+        logger.debug({ meeting: title }, "No Gemini notes Doc found — skipping");
+        continue;
       }
 
-      // Generate meeting notes
-      const context = transcript
-        ? { meeting: title, date, attendees, transcript: transcript.slice(0, 5000) }
-        : { meeting: title, date, attendees };
+      // Read Doc content
+      const docContent = await readGoogleDocText(docId, auth);
+      if (!docContent || docContent.length < 50) {
+        logger.debug({ meeting: title, docId }, "Doc content too short — notes may not be ready yet");
+        continue;
+      }
 
-      const prompt = transcript
-        ? `Analizza il transcript di questo meeting e genera: 1) Summary (max 200 char), 2) Decisioni prese (lista), 3) Action items con responsabile (lista). In italiano.`
-        : `Il meeting "${title}" con ${attendees} e' appena finito. Non ho il transcript. Genera un template per le note con sezioni: Summary, Decisioni, Action Items. Chiedi di compilarlo.`;
+      // Mark as processed BEFORE heavy operations to prevent duplicate runs
+      await markAsProcessed(event.id, docId, title);
 
-      const notes = await agent.think(prompt, context);
+      // Parse notes with Claude
+      const parsed = await parseNotesWithAI(docContent, title, attendeeNames);
+      if (!parsed) {
+        logger.warn({ meeting: title }, "Failed to parse meeting notes — skipping email/Notion");
+        continue;
+      }
 
-      if (!notes || notes.trim().length < 20) continue;
+      // Send email to all attendees
+      if (attendeeEmails.length > 0) {
+        await sendMeetingEmail(attendeeEmails, title, dateStr, parsed);
+      }
 
-      // Create Google Doc with meeting notes
-      const doc = await createMeetingDoc(
-        title,
-        date,
-        notes,
-        [], // AI already structured the notes in the text
-        [],
-      );
+      // Create Notion action items in Meeting Actions DB
+      if (config.NOTION_MEETING_ACTIONS_DATABASE_ID) {
+        for (const item of parsed.actionItems) {
+          await createNotionMeetingAction(item.title, {
+            meetingTitle: title,
+            meetingDate: dateISO,
+            assignee: item.assignee ?? undefined,
+            dueDate: item.dueDate ?? undefined,
+            notes: `Meeting del ${dateStr} — ${parsed.summary}`,
+          }).catch((err) => logger.warn({ err, item: item.title }, "Failed to create Notion meeting action"));
+        }
+      }
 
-      // Post to Slack
-      const meetNotifCh = getNotificationsChannel();
-      if (meetNotifCh) {
-        const docLink = doc ? `\nGoogle Doc: ${doc.url}` : "";
+      // Slack notification summary
+      const notifCh = getNotificationsChannel();
+      if (notifCh) {
+        const actionsList = parsed.actionItems.length
+          ? parsed.actionItems.map((a) => `• ${a.title}${a.assignee ? ` (${a.assignee})` : ""}`).join("\n")
+          : "_Nessun action item_";
         await sendSlackMessage(
-          meetNotifCh,
-          `Meeting Notes — *${title}* (${date})\nPartecipanti: ${attendees}\n\n${notes}${docLink}`,
+          notifCh,
+          `📋 *Meeting: ${title}* — ${dateStr}\n_${attendeeNames}_\n\n*Riassunto:* ${parsed.summary}\n\n*Action items:*\n${actionsList}`,
         ).catch(() => {});
       }
 
-      logger.info({ meeting: title, hasTranscript: !!transcript, docCreated: !!doc }, "Meeting notes generated");
+      logger.info(
+        { meeting: title, docId, attendees: attendeeEmails.length, actions: parsed.actionItems.length },
+        "Meeting notes processed",
+      );
     }
   } catch (err) {
     logger.error({ err }, "Failed to check recent meetings");
-  }
-
-  // Cleanup old processed meetings
-  if (processedMeetings.size > 200) {
-    const entries = [...processedMeetings];
-    entries.slice(0, entries.length - 200).forEach((id) => processedMeetings.delete(id));
   }
 }

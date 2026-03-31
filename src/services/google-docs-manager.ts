@@ -70,6 +70,36 @@ export async function createGoogleDoc(
 }
 
 /**
+ * Read plain text content from an existing Google Doc.
+ */
+export async function readGoogleDocText(docId: string, authOverride?: GoogleAuth | null): Promise<string | null> {
+  const auth = authOverride ?? getGoogleAuth();
+  if (!auth) return null;
+
+  try {
+    const docs = google.docs({ version: "v1", auth });
+    const doc = await docs.documents.get({ documentId: docId });
+    const elements = doc.data.body?.content ?? [];
+    const lines: string[] = [];
+
+    for (const element of elements) {
+      if (element.paragraph) {
+        const text = (element.paragraph.elements ?? [])
+          .map((e: any) => e.textRun?.content ?? "")
+          .join("");
+        const trimmed = text.trimEnd();
+        if (trimmed) lines.push(trimmed);
+      }
+    }
+
+    return lines.join("\n").trim() || null;
+  } catch (err) {
+    logger.error({ err, docId }, "Failed to read Google Doc");
+    return null;
+  }
+}
+
+/**
  * Create a structured meeting notes document.
  */
 export async function createMeetingDoc(

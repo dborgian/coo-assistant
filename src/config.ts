@@ -39,6 +39,7 @@ const envSchema = z.object({
   NOTION_API_KEY: z.string().default(""),
   NOTION_TASKS_DATABASE_ID: z.string().default(""),
   NOTION_PROJECTS_DATABASE_ID: z.string().default(""),
+  NOTION_MEETING_ACTIONS_DATABASE_ID: z.string().default(""),
   NOTION_SYNC_INTERVAL_MINUTES: z.coerce.number().default(15),
 
   // Supabase (PostgreSQL)

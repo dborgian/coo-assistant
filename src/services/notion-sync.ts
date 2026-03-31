@@ -371,6 +371,83 @@ export async function createNotionTask(
   }
 }
 
+/** Create an action item in the Meeting Actions Notion database. */
+export async function createNotionMeetingAction(
+  title: string,
+  props?: { meetingTitle?: string; meetingDate?: string; assignee?: string; dueDate?: string; notes?: string },
+): Promise<string | null> {
+  if (!config.NOTION_MEETING_ACTIONS_DATABASE_ID) return null;
+
+  const client = getClient();
+
+  try {
+    let titlePropName = "Name";
+    let dbInfo: any = null;
+
+    try {
+      dbInfo = await client.databases.retrieve({ database_id: config.NOTION_MEETING_ACTIONS_DATABASE_ID }) as any;
+      if (dbInfo?.properties) {
+        for (const [name, prop] of Object.entries(dbInfo.properties) as [string, any][]) {
+          if (prop.type === "title") { titlePropName = name; break; }
+        }
+      }
+    } catch { /* use defaults */ }
+
+    const properties: Record<string, any> = {
+      [titlePropName]: { title: [{ text: { content: title } }] },
+    };
+
+    if (props?.meetingTitle) {
+      properties["Meeting"] = { rich_text: [{ text: { content: props.meetingTitle } }] };
+    }
+
+    if (props?.meetingDate) {
+      const datePropName = dbInfo?.properties
+        ? (["Date", "Due date", "Due Date", "Meeting Date"].find((n) => (dbInfo.properties[n] as any)?.type === "date") ?? "Date")
+        : "Date";
+      properties[datePropName] = { date: { start: props.meetingDate } };
+    }
+
+    if (props?.assignee) {
+      const notionUserId = await resolveNotionUserId(props.assignee);
+      if (notionUserId) {
+        properties["Assignee"] = { people: [{ id: notionUserId }] };
+      } else {
+        properties["Assignee text"] = { rich_text: [{ text: { content: props.assignee } }] };
+      }
+    }
+
+    if (props?.dueDate) {
+      properties["Due Date"] = { date: { start: props.dueDate } };
+    }
+
+    // Status
+    if (dbInfo?.properties?.["Status"]) {
+      const statusProp = dbInfo.properties["Status"] as any;
+      properties["Status"] = statusProp.type === "select"
+        ? { select: { name: "To Do" } }
+        : { status: { name: "To Do" } };
+    }
+
+    const page = await client.pages.create({
+      parent: { database_id: config.NOTION_MEETING_ACTIONS_DATABASE_ID },
+      properties,
+    }) as any;
+
+    if (props?.notes && page.id) {
+      await client.blocks.children.append({
+        block_id: page.id,
+        children: [{ paragraph: { rich_text: [{ text: { content: props.notes } }] } }] as any,
+      }).catch(() => {});
+    }
+
+    return page.url ?? null;
+  } catch (err) {
+    logger.error({ err, title }, "Failed to create Notion meeting action");
+    return null;
+  }
+}
+
 export async function updateNotionTaskStatus(
   notionPageId: string,
   status: string,
