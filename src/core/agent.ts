@@ -29,6 +29,7 @@ import { getTopics, getClientMentions } from "../services/topic-analyzer.js";
 import { getMeetingStats } from "../services/meeting-intelligence.js";
 import { createGoogleDoc } from "../services/google-docs-manager.js";
 import { processMeetingDocById } from "../services/meeting-notes.js";
+import { loadBrainContext, getBrainStatus, resolveDecision } from "../services/company-brain.js";
 import { unifiedSearch } from "../services/unified-search.js";
 import type { Tool, ToolResultBlockParam } from "@anthropic-ai/sdk/resources/messages.js";
 import type { AccessRole } from "../bot/auth-types.js";
@@ -751,6 +752,15 @@ ${JSON.stringify(data, null, 2)}`;
           doc_url: { type: "string", description: "Google Doc URL or ID (optional — omit to auto-find latest meeting notes from Gmail)" },
           send_to: { type: "string", description: "Email address or person name to send the summary to (optional)" },
         },
+        required: [],
+      },
+    },
+    {
+      name: "brain_status",
+      description: "Show the current state of the Company Brain: how many meetings, open decisions, and company facts are stored. Use for: 'stato del cervello', 'cosa ricordi', 'quante riunioni hai in memoria', 'mostra il brain'.",
+      input_schema: {
+        type: "object" as const,
+        properties: {},
         required: [],
       },
     },
@@ -1630,6 +1640,10 @@ Genera 5-10 task concreti e actionable.`,
         return result;
       }
 
+      if (name === "brain_status") {
+        return await getBrainStatus();
+      }
+
       if (name === "unified_search") {
         const sourceFilter = input.source === "all" ? undefined : input.source;
         const results = await unifiedSearch(input.query, { source: sourceFilter, authOverride: userAuth });
@@ -1803,7 +1817,8 @@ Genera 5-10 task concreti e actionable.`,
     // Load long-term user memories (preferences, patterns) and inject into system prompt
     const memories = chatId ? await getUserMemories(chatId) : [];
     const memoriesPrompt = formatMemoriesForPrompt(memories);
-    const fullSystemPrompt = COO_SYSTEM_PROMPT + rolePromptSuffix + memoriesPrompt;
+    const brainContext = await loadBrainContext();
+    const fullSystemPrompt = COO_SYSTEM_PROMPT + rolePromptSuffix + memoriesPrompt + brainContext;
 
     // --- Tool use loop ---
     const userInfo = userName ? `[Messaggio da: ${userName} (${userRole})]\n` : "";

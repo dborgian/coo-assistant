@@ -84,6 +84,11 @@ export async function clearConversation(chatId: string): Promise<void> {
   memCache.delete(chatId);
 }
 
+/** Expose raw Redis client for services that need direct access (e.g. company-brain). */
+export function getRedis(): typeof redis {
+  return redis;
+}
+
 export async function disconnectRedis(): Promise<void> {
   if (redis) {
     await redis.quit().catch((_e: unknown) => {});

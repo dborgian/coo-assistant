@@ -45,6 +45,11 @@ const envSchema = z.object({
   // Supabase (PostgreSQL)
   SUPABASE_DB_URL: z.string(),
 
+  // Railway deployment (auto-injected by Railway)
+  RAILWAY_PUBLIC_DOMAIN: z.string().default(""),
+  // Secret token to verify Calendar push notification webhooks
+  CALENDAR_WEBHOOK_TOKEN: z.string().default(""),
+
   // Redis (conversation history persistence — optional)
   REDIS_URL: z.string().default(""),
 

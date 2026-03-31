@@ -9,6 +9,7 @@ import { sendEmail, getEmailBody, markEmailAsRead } from "./email-manager.js";
 import { createNotionMeetingAction } from "./notion-sync.js";
 import { readGoogleDocText } from "./google-docs-manager.js";
 import { sendSlackMessage, getNotificationsChannel } from "../bot/slack-monitor.js";
+import { feedMeetingToBrain, extractAndSaveFacts } from "./company-brain.js";
 import { logger } from "../utils/logger.js";
 
 interface ActionItem {
@@ -336,6 +337,14 @@ export async function processMeetingDocById(docUrlOrId?: string, sendTo?: string
     ).catch(() => {});
   }
 
+  // Feed brain (async — don't block the response)
+  feedMeetingToBrain(
+    title, dateISO,
+    parsed.attendees ?? [],
+    summary, keyDecisions, actionItems, openQuestions,
+  ).catch(() => {});
+  extractAndSaveFacts(docContent, title, dateISO).catch(() => {});
+
   logger.info({ docId: resolvedDocId, title, actions: actionItems.length, decisions: keyDecisions.length }, "Meeting doc processed");
 
   const priorityEmoji: Record<string, string> = { high: "🔴", medium: "🟡", low: "🟢" };
@@ -459,6 +468,15 @@ export async function checkRecentMeetings(): Promise<void> {
           `📋 *Meeting: ${title}* — ${dateStr}\n_${attendeeNames}_\n\n*Riassunto:* ${parsed.summary}\n\n*Action items:*\n${actionsList}`,
         ).catch(() => {});
       }
+
+      // Feed brain (async — don't block)
+      feedMeetingToBrain(
+        title, dateISO,
+        attendees.map((a: any) => a.displayName ?? a.email ?? "?"),
+        parsed.summary, parsed.keyDecisions ?? [],
+        parsed.actionItems ?? [], parsed.openQuestions ?? [],
+      ).catch(() => {});
+      extractAndSaveFacts(docContent ?? "", title, dateISO).catch(() => {});
 
       logger.info(
         { meeting: title, docId, attendees: attendeeEmails.length, actions: parsed.actionItems.length },
