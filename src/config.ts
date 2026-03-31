@@ -56,6 +56,9 @@ const envSchema = z.object({
   // Supabase (PostgreSQL)
   SUPABASE_DB_URL: z.string(),
 
+  // Redis (conversation history persistence — optional)
+  REDIS_URL: z.string().default(""),
+
   // Message retention
   MESSAGE_RETENTION_DAYS: z.coerce.number().default(90),
 

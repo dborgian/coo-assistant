@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { disconnectRedis } from "./utils/conversation-cache.js";
 import { createBot } from "./bot/telegram-bot.js";
 import { mcpManager } from "./core/mcp-client.js";
 import { setupSchedules, stopSchedules } from "./core/scheduler.js";
@@ -141,6 +142,7 @@ async function main(): Promise<void> {
     await stopSlackMonitor();
     await stopUserbot();
     await bot.stop();
+    await disconnectRedis();
     await closeDb();
     logger.info("COO Assistant stopped.");
     process.exit(0);

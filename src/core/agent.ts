@@ -33,6 +33,7 @@ import type { Tool, ToolResultBlockParam } from "@anthropic-ai/sdk/resources/mes
 import type { AccessRole } from "../bot/auth.js";
 import { getAllowedToolNames } from "../bot/permissions.js";
 import { getConversationHistory, addToConversation } from "../utils/conversation-cache.js";
+import { getUserMemories, formatMemoriesForPrompt, extractAndSaveMemories } from "../services/user-memory.js";
 
 export interface AgentResponse {
   text: string;
@@ -100,6 +101,11 @@ AZIONI CHE PUOI ESEGUIRE (usa i tools quando l'utente lo chiede):
 CONTESTO CONVERSAZIONE:
 - Trovi nella conversazione i messaggi precedenti dell'utente e le tue risposte passate. Usali per disambiguare riferimenti come "quello", "assegnalo", "completalo", "quell'email", "quel task".
 - Se l'utente dice "assegnalo a X" senza specificare cosa, cerca nell'ultimo messaggio precedente il task o elemento a cui si riferisce.
+
+MEMORIA UTENTE:
+- Se nel system prompt trovi la sezione PREFERENZE UTENTE, usala per personalizzare le risposte.
+- Le preferenze "confermate piu volte" devono essere suggerite proattivamente: es. "Lo preferisci in Word come le altre volte?".
+- Le preferenze non ancora consolidate applicale in silenzio, senza chiedere conferma.
 
 GESTIONE AMBIGUITA':
 - Se un messaggio e' vago o incompleto (es. "crea task", "aggiorna", senza dettagli), chiedi subito la informazione mancante con una domanda breve e diretta. NON indovinare.
@@ -1776,12 +1782,17 @@ Genera 5-10 task concreti e actionable.`,
         ? "\n\nL'utente ha ruolo ADMIN. Puo' creare/modificare task, inviare messaggi, generare report. NON puo' accedere a: sentiment team, communication patterns, commitments, knowledge base, gestione team. Se chiede queste cose, rispondi che non ha i permessi."
         : "\n\nL'utente ha ruolo VIEWER. Puo' SOLO consultare i propri task e il calendario. NON puo' creare/modificare task, inviare messaggi, vedere email, slack, report, o dati di altri employee. Se chiede queste cose, rispondi che non ha i permessi.";
 
+    // Load long-term user memories (preferences, patterns) and inject into system prompt
+    const memories = chatId ? await getUserMemories(chatId) : [];
+    const memoriesPrompt = formatMemoriesForPrompt(memories);
+    const fullSystemPrompt = COO_SYSTEM_PROMPT + rolePromptSuffix + memoriesPrompt;
+
     // --- Tool use loop ---
     const userInfo = userName ? `[Messaggio da: ${userName} (${userRole})]\n` : "";
     const contextStr = `${userInfo}Context:\n\`\`\`json\n${JSON.stringify(context, null, 2)}\n\`\`\`\n\n${query}`;
 
     // Build messages: prepend conversation history for multi-turn disambiguation
-    const history = chatId ? getConversationHistory(chatId) : [];
+    const history = chatId ? await getConversationHistory(chatId) : [];
     let messages: any[] = [
       ...history.map((e) => ({ role: e.role, content: e.content })),
       { role: "user", content: contextStr },
@@ -1792,7 +1803,7 @@ Genera 5-10 task concreti e actionable.`,
       const response = await this.client.messages.create({
         model: this.model,
         max_tokens: 4096,
-        system: COO_SYSTEM_PROMPT + rolePromptSuffix,
+        system: fullSystemPrompt,
         tools: filteredTools,
         messages,
       });
@@ -1828,10 +1839,13 @@ Genera 5-10 task concreti e actionable.`,
 
     const responseText = textParts.join("\n") || "Operazione completata.";
 
-    // Persist query + response in conversation history for follow-up disambiguation
     if (chatId) {
-      addToConversation(chatId, "user", query);
-      addToConversation(chatId, "assistant", responseText);
+      // Persist query + response in conversation history (Redis or in-memory)
+      await addToConversation(chatId, "user", query);
+      await addToConversation(chatId, "assistant", responseText);
+      // Extract and save long-term preferences in background — does not block response
+      extractAndSaveMemories(chatId, query, responseText)
+        .catch((e) => logger.error({ err: e }, "Memory extraction failed"));
     }
 
     return {

@@ -198,3 +198,17 @@ export const dailyReports = pgTable("daily_reports", {
 }, (t) => [
   index("idx_reports_date").on(t.reportDate),
 ]);
+
+export const userMemory = pgTable("user_memory", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  chatId: bigint("chat_id", { mode: "number" }).notNull(),
+  category: text("category").notNull(), // "preference" | "pattern" | "context"
+  key: text("key").notNull(),           // es. "report_format", "preferred_assignee"
+  value: text("value").notNull(),       // es. "word", "Damiano"
+  confidence: integer("confidence").default(1), // incrementa ad ogni conferma
+  lastUsed: timestamp("last_used", { withTimezone: true }).defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index("idx_user_memory_chat").on(t.chatId),
+  uniqueIndex("idx_user_memory_chat_key").on(t.chatId, t.category, t.key),
+]);
