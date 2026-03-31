@@ -23,6 +23,7 @@ import { generateDailyReportPdf, generateEmployeeReportPdf, generateWeeklyReport
 import { uploadFileToDrive } from "../services/drive-manager.js";
 import { getMonitoredSlackChannels, addMonitoredSlackChannel, removeMonitoredSlackChannel } from "./slack-monitor.js";
 import { buildDashboardBlocks } from "./slack-dashboard.js";
+import { processMeetingDocById } from "../services/meeting-notes.js";
 import type { SlackAuthUser } from "./slack-monitor.js";
 
 type ResolveFn = (slackId: string) => Promise<SlackAuthUser | null>;
@@ -503,6 +504,23 @@ export function registerSlashCommands(slackApp: SlackApp, resolveUser: ResolveFn
     } catch (err) {
       logger.error({ err }, "/coo-slack-monitor failed");
       await respond("Errore nella configurazione del monitoraggio.");
+    }
+  });
+
+  // /coo-process-meeting — manually process a Google Doc as meeting notes
+  slackApp.command("/coo-process-meeting", async ({ ack, command, respond }) => {
+    await ack();
+    try {
+      const user = await resolveUser(command.user_id);
+      if (!requireRole(user, "owner", "admin")) { await respond("Accesso negato."); return; }
+      const docUrl = command.text.trim();
+      if (!docUrl) { await respond("Uso: `/coo-process-meeting [URL o ID del Google Doc]`"); return; }
+      await respond("Elaborazione in corso...");
+      const result = await processMeetingDocById(docUrl);
+      await respond(result);
+    } catch (err) {
+      logger.error({ err }, "/coo-process-meeting failed");
+      await respond("Errore nell'elaborazione del documento.");
     }
   });
 

