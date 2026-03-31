@@ -819,6 +819,7 @@ export async function askCommand(ctx: Context): Promise<void> {
       user?.role ?? "viewer",
       user?.employeeId ?? null,
       user?.name,
+      ctx.chat?.id,
     );
 
     await ctx.api.deleteMessage(ctx.chat!.id, waitingMsg.message_id).catch(() => {});

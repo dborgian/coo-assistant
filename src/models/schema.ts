@@ -1,4 +1,5 @@
-import { pgTable, text, boolean, uuid, timestamp, date, bigint, integer, real, jsonb, index } from "drizzle-orm/pg-core";
+import { pgTable, text, boolean, uuid, timestamp, date, bigint, integer, real, jsonb, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 export const employees = pgTable("employees", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -86,7 +87,7 @@ export const tasks = pgTable("tasks", {
   index("idx_tasks_status").on(t.status),
   index("idx_tasks_assigned").on(t.assignedTo),
   index("idx_tasks_due").on(t.dueDate),
-  index("idx_tasks_external").on(t.source, t.externalId),
+  uniqueIndex("idx_tasks_external").on(t.source, t.externalId).where(sql`external_id IS NOT NULL`),
 ]);
 
 export const messageLogs = pgTable("message_logs", {

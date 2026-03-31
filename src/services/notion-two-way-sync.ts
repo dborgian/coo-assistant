@@ -3,7 +3,7 @@ import { and, eq, isNull, isNotNull, sql, inArray, not } from "drizzle-orm";
 import { config } from "../config.js";
 import { db } from "../models/database.js";
 import { tasks, employees } from "../models/schema.js";
-import { createNotionTask, isNotionConfigured, getNotionTasksViaSearch, updateNotionTaskStatus, updateNotionTaskProperties, archiveNotionPage } from "./notion-sync.js";
+import { createNotionTask, isNotionConfigured, getNotionTasksViaSearch, updateNotionTaskStatus, updateNotionTaskProperties, archiveNotionPage, extractNotionPageId } from "./notion-sync.js";
 import { completeGoogleTask } from "./google-tasks-sync.js";
 import { logger } from "../utils/logger.js";
 
@@ -13,7 +13,8 @@ export async function syncTasksToNotion(bot: Bot): Promise<void> {
     return;
   }
 
-  // Find tasks created in our DB that don't have a Notion externalId
+  // Find tasks created in our DB that don't have a Notion externalId.
+  // Guard: skip tasks created less than 30s ago to avoid race with agent.ts create_task (which awaits Notion sync).
   const unsyncedTasks = await db
     .select()
     .from(tasks)
@@ -22,6 +23,7 @@ export async function syncTasksToNotion(bot: Bot): Promise<void> {
         inArray(tasks.source, ["ai", "manual", "recurring"]),
         isNull(tasks.externalId),
         inArray(tasks.status, ["pending", "in_progress"]),
+        sql`${tasks.createdAt} < NOW() - INTERVAL '30 seconds'`,
       ),
     );
 
@@ -40,7 +42,7 @@ export async function syncTasksToNotion(bot: Bot): Promise<void> {
       });
 
       if (url) {
-        const pageId = url.split("/").pop()?.split("-").pop() ?? null;
+        const pageId = extractNotionPageId(url);
         await db
           .update(tasks)
           .set({

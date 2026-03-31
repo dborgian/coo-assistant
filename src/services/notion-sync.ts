@@ -63,6 +63,18 @@ export function isNotionConfigured(): boolean {
   return !!config.NOTION_API_KEY;
 }
 
+// --- Helpers ---
+
+/** Extracts the Notion page ID (UUID or 32-char hex) from a Notion URL. */
+export function extractNotionPageId(url: string): string | null {
+  return (
+    url.match(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/)?.[0]
+    ?? url.match(/([a-f0-9]{32})/)?.[1]
+    ?? url.split("/").pop()?.split("-").pop()
+    ?? null
+  );
+}
+
 // --- Cache ---
 
 let _cachedData: NotionWorkspaceSummary | null = null;

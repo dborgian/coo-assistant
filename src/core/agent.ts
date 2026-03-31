@@ -7,7 +7,7 @@ import { logger } from "../utils/logger.js";
 import { getTodayEvents, getTeamEvents } from "../services/calendar-sync.js";
 import { sendTieredNotification, getTargetLevel } from "../services/task-reminder.js";
 import { getUnreadImportantEmails, sendEmail, searchEmails, forwardEmail, replyToEmail } from "../services/email-manager.js";
-import { getNotionWorkspaceSummary, isNotionConfigured, createNotionTask, searchNotion, updateNotionTaskStatus, discoverNotionUsers } from "../services/notion-sync.js";
+import { getNotionWorkspaceSummary, isNotionConfigured, createNotionTask, searchNotion, updateNotionTaskStatus, discoverNotionUsers, extractNotionPageId } from "../services/notion-sync.js";
 import { parseDateKeywords, findEmployeeInQuery, getActivityByDateRange, getEmployeeActivity } from "../services/history-query.js";
 import { listDriveFiles, searchDriveFiles, uploadFileToDrive } from "../services/drive-manager.js";
 import { getAuthForEmployee, getGoogleAuth, getUserGoogleAuth } from "./google-auth.js";
@@ -32,6 +32,7 @@ import { unifiedSearch } from "../services/unified-search.js";
 import type { Tool, ToolResultBlockParam } from "@anthropic-ai/sdk/resources/messages.js";
 import type { AccessRole } from "../bot/auth.js";
 import { getAllowedToolNames } from "../bot/permissions.js";
+import { getConversationHistory, addToConversation } from "../utils/conversation-cache.js";
 
 export interface AgentResponse {
   text: string;
@@ -95,6 +96,10 @@ AZIONI CHE PUOI ESEGUIRE (usa i tools quando l'utente lo chiede):
 - Statistiche meeting e overload (get_meeting_intelligence)
 - Aggiungere commenti/note ai task su Notion (add_notion_comment)
 - Creare progetti su Notion (create_notion_project)
+
+CONTESTO CONVERSAZIONE:
+- Trovi nella conversazione i messaggi precedenti dell'utente e le tue risposte passate. Usali per disambiguare riferimenti come "quello", "assegnalo", "completalo", "quell'email", "quel task".
+- Se l'utente dice "assegnalo a X" senza specificare cosa, cerca nell'ultimo messaggio precedente il task o elemento a cui si riferisce.
 
 GESTIONE AMBIGUITA':
 - Se un messaggio e' vago o incompleto (es. "crea task", "aggiorna", senza dettagli), chiedi subito la informazione mancante con una domanda breve e diretta. NON indovinare.
@@ -763,23 +768,24 @@ ${JSON.stringify(data, null, 2)}`;
           createGoogleTask(newTask.id).catch((e) => logger.error({ err: e, taskId: newTask.id }, "Google Tasks sync on create failed"));
         }
 
-        // Sync to Notion (auto, no need to mention "notion" in the request)
+        // Sync to Notion — awaited to prevent race with syncTasksToNotion cron
         if (isNotionConfigured()) {
-          createNotionTask(input.title, {
-            assignee: input.assigned_to_name,
-            dueDate: input.due_date,
-            priority: input.priority,
-            description: input.description,
-          }).then((url) => {
-            if (url && newTask?.id) {
-              const pageId = url.match(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/)?.[0]
-                ?? url.match(/([a-f0-9]{32})/)?.[1];
+          try {
+            const notionUrl = await createNotionTask(input.title, {
+              assignee: input.assigned_to_name,
+              dueDate: input.due_date,
+              priority: input.priority,
+              description: input.description,
+            });
+            if (notionUrl && newTask?.id) {
+              const pageId = extractNotionPageId(notionUrl);
               if (pageId) {
-                db.update(tasks).set({ externalId: `notion:${pageId}` }).where(eq(tasks.id, newTask.id))
-                  .catch((e) => logger.error({ err: e, taskId: newTask.id, pageId }, "DB update of Notion externalId failed"));
+                await db.update(tasks).set({ externalId: `notion:${pageId}` }).where(eq(tasks.id, newTask.id));
               }
             }
-          }).catch((e) => logger.error({ err: e }, "Notion sync from create_task failed"));
+          } catch (e) {
+            logger.error({ err: e, taskId: newTask?.id }, "Notion sync from create_task failed");
+          }
         }
 
         // Instant tiered notification to assignee based on time to deadline
@@ -1008,8 +1014,7 @@ ${JSON.stringify(data, null, 2)}`;
             notionAssignedTo = empRow?.id ?? null;
           }
           const notionDue = input.due_date ? parseLocalDate(input.due_date, input.timezone ?? userTz) : null;
-          const notionPageId = url?.match(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/)?.[0]
-            ?? url?.match(/([a-f0-9]{32})/)?.[1];
+          const notionPageId = url ? extractNotionPageId(url) : null;
           const [notionDbTask] = await db.insert(tasks).values({
             title: input.title,
             description: input.description ?? null,
@@ -1742,6 +1747,7 @@ Genera 5-10 task concreti e actionable.`,
     userRole: AccessRole = "owner",
     employeeId: string | null = null,
     userName?: string,
+    chatId?: number,
   ): Promise<AgentResponse> {
     this.collectedFiles = [];
 
@@ -1774,7 +1780,12 @@ Genera 5-10 task concreti e actionable.`,
     const userInfo = userName ? `[Messaggio da: ${userName} (${userRole})]\n` : "";
     const contextStr = `${userInfo}Context:\n\`\`\`json\n${JSON.stringify(context, null, 2)}\n\`\`\`\n\n${query}`;
 
-    let messages: any[] = [{ role: "user", content: contextStr }];
+    // Build messages: prepend conversation history for multi-turn disambiguation
+    const history = chatId ? getConversationHistory(chatId) : [];
+    let messages: any[] = [
+      ...history.map((e) => ({ role: e.role, content: e.content })),
+      { role: "user", content: contextStr },
+    ];
     let textParts: string[] = [];
 
     for (let i = 0; i < 5; i++) { // max 5 tool call rounds
@@ -1815,8 +1826,16 @@ Genera 5-10 task concreti e actionable.`,
       ];
     }
 
+    const responseText = textParts.join("\n") || "Operazione completata.";
+
+    // Persist query + response in conversation history for follow-up disambiguation
+    if (chatId) {
+      addToConversation(chatId, "user", query);
+      addToConversation(chatId, "assistant", responseText);
+    }
+
     return {
-      text: textParts.join("\n") || "Operazione completata.",
+      text: responseText,
       files: this.collectedFiles.length ? this.collectedFiles : undefined,
     };
   }
