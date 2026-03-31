@@ -28,6 +28,7 @@ import { queryKnowledge } from "../services/knowledge-base.js";
 import { getTopics, getClientMentions } from "../services/topic-analyzer.js";
 import { getMeetingStats } from "../services/meeting-intelligence.js";
 import { createGoogleDoc } from "../services/google-docs-manager.js";
+import { processMeetingDocById } from "../services/meeting-notes.js";
 import { unifiedSearch } from "../services/unified-search.js";
 import type { Tool, ToolResultBlockParam } from "@anthropic-ai/sdk/resources/messages.js";
 import type { AccessRole } from "../bot/auth-types.js";
@@ -739,6 +740,18 @@ ${JSON.stringify(data, null, 2)}`;
           max_results: { type: "number", description: "Max results (default: 5)" },
         },
         required: ["query"],
+      },
+    },
+    {
+      name: "process_meeting_notes",
+      description: "Process a Google Doc as meeting notes: reads the doc, generates an AI summary, extracts action items, creates Notion tasks, and optionally sends the summary by email. Use when the user shares a Google Doc URL/ID or says 'riassumi il meet', 'processa le note del meeting', 'fai il riassunto e invialo a...'.",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          doc_url: { type: "string", description: "Google Doc URL or ID to process" },
+          send_to: { type: "string", description: "Email address or name to send the summary to (optional — if not provided, summary is sent to attendees found in the doc)" },
+        },
+        required: ["doc_url"],
       },
     },
   ];
@@ -1610,6 +1623,11 @@ Genera 5-10 task concreti e actionable.`,
         const doc = await createGoogleDoc(input.title, input.content, undefined, userAuth);
         if (!doc) return "Impossibile creare il documento. Verifica la configurazione Google.";
         return `Documento creato: "${doc.title}"\n${doc.url}`;
+      }
+
+      if (name === "process_meeting_notes") {
+        const result = await processMeetingDocById(input.doc_url, input.send_to);
+        return result;
       }
 
       if (name === "unified_search") {

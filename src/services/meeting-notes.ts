@@ -147,7 +147,7 @@ function extractDocId(urlOrId: string): string {
  * Reads the doc, extracts info via AI, sends emails, creates Notion tasks.
  * Returns a human-readable status message.
  */
-export async function processMeetingDocById(docUrlOrId: string): Promise<string> {
+export async function processMeetingDocById(docUrlOrId: string, sendTo?: string): Promise<string> {
   if (!isGoogleConfigured()) return "Google non configurato.";
 
   const auth = getGoogleAuth();
@@ -188,9 +188,13 @@ Rispondi SOLO con il JSON.`;
   const actionItems: ActionItem[] = parsed.actionItems ?? [];
   const summary: string = parsed.summary ?? "";
 
-  // Send email if we have attendee emails in the doc
-  // (attendees from AI are names, not emails — skip email for manual trigger unless user provides)
-  // Instead we create Notion tasks and post Slack summary
+  // Send email if a specific recipient was provided
+  if (sendTo) {
+    const emailTarget = sendTo.includes("@") ? sendTo : null;
+    if (emailTarget) {
+      await sendMeetingEmail([emailTarget], title, dateStr, { summary, actionItems }).catch(() => {});
+    }
+  }
 
   let notionCount = 0;
   if (config.NOTION_MEETING_ACTIONS_DATABASE_ID) {
