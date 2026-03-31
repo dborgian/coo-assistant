@@ -1167,13 +1167,33 @@ ${JSON.stringify(data, null, 2)}`;
             .where(ilike(tasks.title, `%${input.title}%`))
             .limit(1);
           const notionId = found[0]?.externalId?.replace(/^notion(-done)?:/, "");
-          if (!notionId) return `Task "${input.title}" non trovato su Notion (externalId mancante).`;
 
-          const ok = await archiveNotionPage(notionId);
-          if (ok && found[0]?.id) {
-            await db.delete(tasks).where(eq(tasks.id, found[0].id));
+          const archivedTitles: string[] = [];
+
+          // Archive via internal DB externalId (main Tasks DB)
+          if (notionId) {
+            const ok = await archiveNotionPage(notionId);
+            if (ok) {
+              archivedTitles.push(found[0]?.title ?? input.title);
+              if (found[0]?.id) await db.delete(tasks).where(eq(tasks.id, found[0].id));
+            }
           }
-          return ok ? `Task "${found[0]?.title}" eliminato da Notion.` : `Eliminazione fallita per "${input.title}".`;
+
+          // Fallback: search Notion directly to catch Meeting Actions or any untracked pages
+          const notionResults = await searchNotion(input.title);
+          for (const r of notionResults) {
+            const pageId = extractNotionPageId(r.url);
+            // Skip if already archived above
+            if (pageId && pageId !== notionId) {
+              const ok = await archiveNotionPage(pageId);
+              if (ok) archivedTitles.push(r.title);
+            }
+          }
+
+          if (archivedTitles.length > 0) {
+            return `Eliminato da Notion: ${archivedTitles.map((t) => `"${t}"`).join(", ")}.`;
+          }
+          return `Task "${input.title}" non trovato su Notion.`;
         }
         return `Azione Notion "${action}" non riconosciuta.`;
       }
