@@ -175,6 +175,7 @@ export async function generateDailySlackDigest(): Promise<void> {
         transcript,
         `Slack #${ch.chatTitle}`,
         new Date().toISOString().split("T")[0],
+        "slack",
       ).catch(() => {});
     }
   }

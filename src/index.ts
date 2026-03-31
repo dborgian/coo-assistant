@@ -30,7 +30,7 @@ import { detectMeetingOverload } from "./services/meeting-intelligence.js";
 import { checkAndSummarizeThreads, generateDailySlackDigest } from "./services/thread-summarizer.js";
 import { sendEodPrompts, collectEodResponses } from "./services/eod-reports.js";
 import { checkRecentMeetings } from "./services/meeting-notes.js";
-import { rebuildBrainFromDB } from "./services/company-brain.js";
+import { rebuildBrainFromDB, cleanupOldIntelligenceEvents } from "./services/company-brain.js";
 import { startSlackMonitor, stopSlackMonitor } from "./bot/slack-monitor.js";
 import { handleOAuthCallback } from "./bot/onboarding.js";
 import { config } from "./config.js";
@@ -79,6 +79,7 @@ async function main(): Promise<void> {
     eodCollect: async () => { await collectEodResponses(); },
     meetingNotes: async () => { await checkRecentMeetings(); },
     calendarWatchRenewal: () => registerCalendarWatch(),
+    brainCleanup: () => cleanupOldIntelligenceEvents(),
   });
 
   // Discover and link Notion users to employees
@@ -98,6 +99,7 @@ async function main(): Promise<void> {
 
   // HTTP server: health check + OAuth callback
   const port = process.env.PORT || 3000;
+  let lastWebhookCheck = 0; // debounce: ignore rapid repeated calendar notifications
   createServer(async (req, res) => {
     const url = new URL(req.url || "/", `http://localhost:${port}`);
 
@@ -120,6 +122,14 @@ async function main(): Promise<void> {
 
       // "sync" is the initial handshake — skip processing
       if (state === "sync") return;
+
+      // Debounce: skip if we ran a check less than 2 minutes ago
+      const now = Date.now();
+      if (now - lastWebhookCheck < 120_000) {
+        logger.debug("Calendar webhook debounced — too soon since last check");
+        return;
+      }
+      lastWebhookCheck = now;
 
       // "exists" means calendar was modified — check for new meeting notes
       logger.info({ state }, "Calendar push notification received");

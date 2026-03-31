@@ -9,12 +9,18 @@
  * The brain context is injected into every agent query so the AI is
  * always aware of recent decisions, ongoing work, and team/project facts.
  */
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq, lt } from "drizzle-orm";
 import { agent } from "../core/agent.js";
 import { db } from "../models/database.js";
 import { intelligenceEvents } from "../models/schema.js";
 import { getRedis } from "../utils/conversation-cache.js";
 import { logger } from "../utils/logger.js";
+
+// Mutex to prevent race condition when two concurrent calls update the facts key
+let factsLock = false;
+
+// Fact sub-categories (distinct from the "fact" search category)
+const FACT_CATEGORIES = new Set<string>(["team", "project", "client", "process", "decision"]);
 
 // --- Redis keys & TTLs ---
 const MEETINGS_KEY = "brain:meetings:recent";
@@ -100,14 +106,6 @@ export async function feedMeetingToBrain(
     await rSet(DECISIONS_KEY, JSON.stringify(decisions), TTL_DECISIONS);
   }
 
-  // --- PostgreSQL: store meeting as intelligence event ---
-  await db.insert(intelligenceEvents).values({
-    type: "meeting_notes",
-    content: `${title}: ${summary.slice(0, 200)}`,
-    status: "active",
-    metadata: { title, date, attendees, keyDecisions, actionItemCount: actionItems.length },
-  }).catch((err) => logger.warn({ err }, "Failed to persist meeting to DB"));
-
   logger.info({ title, decisions: keyDecisions.length, actions: actionItems.length }, "Meeting fed to brain");
 }
 
@@ -119,8 +117,13 @@ export async function extractAndSaveFacts(
   docContent: string,
   meetingTitle: string,
   meetingDate: string,
+  source: "meeting" | "slack" = "meeting",
 ): Promise<void> {
-  const prompt = `Analizza queste note di meeting ed estrai FATTI AZIENDALI STABILI — informazioni vere nel tempo, utili per capire l'azienda, il team e i progetti.
+  const sourceLabel = source === "slack"
+    ? `CONVERSAZIONE SLACK "${meetingTitle}"`
+    : `NOTE DEL MEETING "${meetingTitle}"`;
+
+  const prompt = `Analizza questo contenuto ed estrai FATTI AZIENDALI STABILI — informazioni vere nel tempo, utili per capire l'azienda, il team e i progetti.
 
 CATEGORIE:
 - team: chi fa cosa, responsabilità, ruoli, skills
@@ -131,16 +134,19 @@ CATEGORIE:
 
 REGOLE:
 - Solo fatti concreti e verificabili (no opinioni, no temporanei)
-- Max 8 fatti per meeting
+- Max 8 fatti per fonte
 - Ogni fatto = frase chiara e autosufficiente, leggibile senza contesto
 - Ignora dettagli operativi che cambiano spesso
 
-NOTE DEL MEETING "${meetingTitle}":
+${sourceLabel}:
 ${docContent.slice(0, 5000)}
 
 Rispondi SOLO con JSON:
 {"facts": [{"fact": "...", "category": "team|project|client|process|decision"}]}`;
 
+  // Mutex: prevent concurrent writes to the facts key
+  while (factsLock) await new Promise((r) => setTimeout(r, 100));
+  factsLock = true;
   try {
     const raw = await agent.think(prompt);
     const match = raw.match(/\{[\s\S]*\}/);
@@ -209,20 +215,27 @@ Se nessun conflitto: {"superseded": []}`;
     logger.info({ count: toAdd.length, meeting: meetingTitle }, "Company facts extracted");
   } catch (err) {
     logger.error({ err }, "Failed to extract company facts");
+  } finally {
+    factsLock = false;
   }
 }
 
 /**
  * Mark a decision as resolved — removes it from the open decisions list.
  */
-export async function resolveDecision(decisionText: string): Promise<void> {
+export async function resolveDecision(decisionText: string): Promise<string> {
+  if (decisionText.length < 5) return "Testo troppo corto — specifica meglio la decisione da risolvere.";
   const rawD = await rGet(DECISIONS_KEY);
-  if (!rawD) return;
+  if (!rawD) return "Nessuna decisione aperta nel cervello.";
   const decisions: OpenDecision[] = JSON.parse(rawD);
   const filtered = decisions.filter((d) =>
     !d.decision.toLowerCase().includes(decisionText.toLowerCase()),
   );
+  const removedCount = decisions.length - filtered.length;
+  if (removedCount === 0) return `Nessuna decisione trovata con il testo "${decisionText}".`;
+  if (removedCount > 3) return `Trovate ${removedCount} decisioni che corrispondono a "${decisionText}" — troppo generico. Specifica meglio.`;
   await rSet(DECISIONS_KEY, JSON.stringify(filtered), TTL_DECISIONS);
+  return `${removedCount} decisione${removedCount > 1 ? "i" : ""} marcata${removedCount > 1 ? "e" : ""} come risolta${removedCount > 1 ? "e" : ""}.`;
 }
 
 /**
@@ -240,50 +253,53 @@ export async function loadBrainContext(): Promise<string> {
 
   const parts: string[] = [];
 
-  // Recent meetings (last 4)
+  // Recent meetings (last 3)
   if (meetingsRaw) {
     const meetings: BrainMeeting[] = JSON.parse(meetingsRaw);
-    const recent = meetings.slice(0, 4);
+    const recent = meetings.slice(0, 3);
     if (recent.length) {
       const lines = recent.map((m) => {
         const dec = m.keyDecisions.length ? ` | Decisioni: ${m.keyDecisions.slice(0, 2).join("; ")}` : "";
-        const acts = m.actionItems.slice(0, 3).map((a) => `    - ${a.title}${a.assignee ? ` (${a.assignee})` : ""}`).join("\n");
-        return `• [${m.date}] ${m.title}\n  ${m.summary.slice(0, 150)}${dec}${acts ? `\n  Action items:\n${acts}` : ""}`;
+        const acts = m.actionItems.slice(0, 2).map((a) => `    - ${a.title}${a.assignee ? ` (${a.assignee})` : ""}`).join("\n");
+        return `• [${m.date}] ${m.title}\n  ${m.summary.slice(0, 100)}${dec}${acts ? `\n  Actions:\n${acts}` : ""}`;
       });
       parts.push(`ULTIMI MEETING:\n${lines.join("\n\n")}`);
     }
   }
 
-  // Open decisions (max 8)
+  // Open decisions (max 5)
   if (decisionsRaw) {
     const decisions: OpenDecision[] = JSON.parse(decisionsRaw);
-    const open = decisions.slice(0, 8);
+    const open = decisions.slice(0, 5);
     if (open.length) {
       const lines = open.map((d) => `• ${d.decision} [${d.meeting}, ${d.date}]`);
       parts.push(`DECISIONI APERTE:\n${lines.join("\n")}`);
     }
   }
 
-  // Company facts grouped by category (max 25 total)
+  // Company facts grouped by category (max 15 total, 3 per category)
   if (factsRaw) {
     const facts: CompanyFact[] = JSON.parse(factsRaw);
     if (facts.length) {
       const byCategory = new Map<string, string[]>();
-      for (const f of facts.slice(0, 25)) {
+      for (const f of facts.slice(0, 15)) {
         if (!byCategory.has(f.category)) byCategory.set(f.category, []);
-        byCategory.get(f.category)!.push(f.fact);
+        if ((byCategory.get(f.category)!.length) < 3) byCategory.get(f.category)!.push(f.fact);
       }
       const lines: string[] = [];
       for (const [cat, factList] of byCategory) {
         lines.push(`[${cat.toUpperCase()}]`);
-        factList.slice(0, 5).forEach((f) => lines.push(`  • ${f}`));
+        factList.forEach((f) => lines.push(`  • ${f}`));
       }
       parts.push(`FATTI AZIENDALI:\n${lines.join("\n")}`);
     }
   }
 
   if (!parts.length) return "";
-  return `\n\n---\nCONTESTO AZIENDA (aggiornato dai meeting):\n${parts.join("\n\n")}\n---`;
+  const body = parts.join("\n\n");
+  // Hard cap to avoid context bloat (~800 tokens ≈ 3200 chars)
+  const capped = body.length > 3200 ? body.slice(0, 3200) + "\n[...troncato]" : body;
+  return `\n\n---\nCONTESTO AZIENDA (aggiornato dai meeting):\n${capped}\n---`;
 }
 
 /**
@@ -293,14 +309,18 @@ export async function loadBrainContext(): Promise<string> {
 export async function rebuildBrainFromDB(): Promise<void> {
   if (!getRedis()) return;
 
-  const [meetingsRaw, factsRaw] = await Promise.all([
+  const [meetingsRaw, decisionsRaw, factsRaw] = await Promise.all([
     rGet(MEETINGS_KEY),
+    rGet(DECISIONS_KEY),
     rGet(FACTS_KEY),
   ]);
 
   const needMeetings = !meetingsRaw;
+  const needDecisions = !decisionsRaw;
   const needFacts = !factsRaw;
-  if (!needMeetings && !needFacts) return;
+  if (!needMeetings && !needDecisions && !needFacts) return;
+
+  let rebuiltMeetings: BrainMeeting[] = [];
 
   if (needMeetings) {
     const rows = await db
@@ -312,7 +332,7 @@ export async function rebuildBrainFromDB(): Promise<void> {
       .catch(() => []);
 
     if (rows.length) {
-      const meetings: BrainMeeting[] = rows.map((row) => {
+      rebuiltMeetings = rows.map((row) => {
         const meta = (row.metadata ?? {}) as Record<string, unknown>;
         const titleFromContent = row.content.split(":")[0] ?? "Meeting";
         return {
@@ -321,13 +341,27 @@ export async function rebuildBrainFromDB(): Promise<void> {
           attendees: (meta.attendees as string[]) ?? [],
           summary: row.content.replace(/^[^:]+:\s*/, ""),
           keyDecisions: (meta.keyDecisions as string[]) ?? [],
-          actionItems: [],
-          openQuestions: [],
+          actionItems: (meta.actionItems as BrainMeeting["actionItems"]) ?? [],
+          openQuestions: (meta.openQuestions as string[]) ?? [],
           processedAt: row.createdAt?.toISOString() ?? new Date().toISOString(),
         };
       });
-      await rSet(MEETINGS_KEY, JSON.stringify(meetings), TTL_MEETINGS);
-      logger.info({ count: meetings.length }, "Brain meetings rebuilt from DB");
+      await rSet(MEETINGS_KEY, JSON.stringify(rebuiltMeetings), TTL_MEETINGS);
+      logger.info({ count: rebuiltMeetings.length }, "Brain meetings rebuilt from DB");
+    }
+  }
+
+  // Rebuild open decisions from meeting keyDecisions (if decisions key is also empty)
+  if (needDecisions && rebuiltMeetings.length > 0) {
+    const allDecisions: OpenDecision[] = [];
+    for (const m of rebuiltMeetings) {
+      for (const d of m.keyDecisions) {
+        allDecisions.push({ decision: d, meeting: m.title, date: m.date });
+      }
+    }
+    if (allDecisions.length > 0) {
+      await rSet(DECISIONS_KEY, JSON.stringify(allDecisions.slice(0, 50)), TTL_DECISIONS);
+      logger.info({ count: allDecisions.length }, "Brain decisions rebuilt from meetings");
     }
   }
 
@@ -395,11 +429,12 @@ export async function queryBrain(query: string, category?: string): Promise<stri
     }
   }
 
-  if (!category || category === "fact") {
+  // "fact" = search all facts; specific sub-category = filter by category
+  if (!category || category === "fact" || FACT_CATEGORIES.has(category)) {
     const facts: CompanyFact[] = factsRaw ? JSON.parse(factsRaw) : [];
     const matched = facts.filter((f) =>
       f.fact.toLowerCase().includes(q) ||
-      (category && f.category === category),
+      (FACT_CATEGORIES.has(category ?? "") && f.category === category),
     );
     if (matched.length) {
       parts.push(`FATTI:\n${matched.slice(0, 10).map((f) =>
@@ -445,6 +480,29 @@ export async function addFactToBrain(
   }).catch(() => {});
 
   logger.info({ fact: fact.slice(0, 80), category }, "Manual fact added to brain");
+}
+
+/**
+ * Delete old intelligence_events rows to prevent unbounded table growth.
+ * Run weekly: deletes meeting_notes > 90 days, superseded facts > 30 days.
+ */
+export async function cleanupOldIntelligenceEvents(): Promise<void> {
+  const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+  await db.delete(intelligenceEvents).where(
+    and(eq(intelligenceEvents.type, "meeting_notes"), lt(intelligenceEvents.createdAt, ninetyDaysAgo)),
+  ).catch((err) => logger.warn({ err }, "Failed to cleanup old meeting events"));
+
+  await db.delete(intelligenceEvents).where(
+    and(
+      eq(intelligenceEvents.type, "company_fact"),
+      eq(intelligenceEvents.status, "superseded"),
+      lt(intelligenceEvents.createdAt, thirtyDaysAgo),
+    ),
+  ).catch((err) => logger.warn({ err }, "Failed to cleanup superseded facts"));
+
+  logger.info("Intelligence events cleanup completed");
 }
 
 /**

@@ -771,7 +771,7 @@ ${JSON.stringify(data, null, 2)}`;
         type: "object" as const,
         properties: {
           query: { type: "string", description: "Keywords to search for in the brain" },
-          category: { type: "string", enum: ["meeting", "decision", "fact"], description: "Limit search to a specific category (optional)" },
+          category: { type: "string", enum: ["meeting", "decision", "team", "project", "client", "process"], description: "Limit search to a specific category (optional). Use meeting/decision for those types, or team/project/client/process for company facts." },
         },
         required: ["query"],
       },
@@ -1689,8 +1689,7 @@ Genera 5-10 task concreti e actionable.`,
       }
 
       if (name === "resolve_decision") {
-        await resolveDecision(input.decision_text as string);
-        return `Decisione "${input.decision_text}" marcata come risolta e rimossa dalle decisioni aperte.`;
+        return await resolveDecision(input.decision_text as string);
       }
 
       if (name === "unified_search") {

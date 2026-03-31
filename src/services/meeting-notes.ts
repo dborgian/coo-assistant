@@ -46,12 +46,31 @@ async function isAlreadyProcessed(calendarEventId: string): Promise<boolean> {
   return !!row;
 }
 
-async function markAsProcessed(calendarEventId: string, driveFileId: string, meetingTitle: string): Promise<void> {
+async function markAsProcessed(
+  calendarEventId: string,
+  driveFileId: string,
+  meetingTitle: string,
+  fullData?: {
+    date?: string;
+    attendees?: string[];
+    keyDecisions?: string[];
+    actionItems?: Array<{ title: string; assignee?: string; dueDate?: string; priority?: string }>;
+    openQuestions?: string[];
+    summary?: string;
+  },
+): Promise<void> {
   await db.insert(intelligenceEvents).values({
     type: "meeting_notes",
-    content: meetingTitle,
+    content: fullData?.summary ? `${meetingTitle}: ${fullData.summary.slice(0, 200)}` : meetingTitle,
     status: "active",
-    metadata: { calendarEventId, driveFileId },
+    metadata: {
+      calendarEventId, driveFileId, title: meetingTitle,
+      date: fullData?.date,
+      attendees: fullData?.attendees,
+      keyDecisions: fullData?.keyDecisions,
+      actionItems: fullData?.actionItems,
+      openQuestions: fullData?.openQuestions,
+    },
   });
 }
 
@@ -218,7 +237,7 @@ ${decisionsText}
 ACTION ITEMS
 ─────────────────────────────
 ${actionItemsText}`,
-    openQuestionsText ? `\n─────────────────────────────\nDOMINDE APERTE\n─────────────────────────────\n${openQuestionsText}` : "",
+    openQuestionsText ? `\n─────────────────────────────\nDOMANDE APERTE\n─────────────────────────────\n${openQuestionsText}` : "",
     parsed.nextMeetingDate ? `\n📅 Prossimo meeting: ${parsed.nextMeetingDate}` : "",
     "\n─────────────────────────────\n\nQuesto messaggio è stato generato automaticamente dal COO Assistant.",
   ].join("");
@@ -262,13 +281,31 @@ export async function processMeetingDocById(docUrlOrId?: string, sendTo?: string
     resolvedDocId = extractDocId(docUrlOrId);
   }
 
+  // Deduplication guard for explicit doc IDs
+  if (docUrlOrId) {
+    const [existing] = await db
+      .select({ id: intelligenceEvents.id })
+      .from(intelligenceEvents)
+      .where(
+        and(
+          eq(intelligenceEvents.type, "meeting_notes"),
+          sql`${intelligenceEvents.metadata}->>'driveFileId' = ${resolvedDocId}`,
+        ),
+      )
+      .limit(1);
+    if (existing) return "Questo meeting è già stato processato in precedenza.";
+  }
+
   const docContent = await readGoogleDocText(resolvedDocId, auth);
   if (!docContent || docContent.length < 30) {
     return "Documento vuoto o non accessibile. Verifica che il bot abbia accesso al Doc.";
   }
 
+  // Extract title from first non-empty line if not known
+  const firstLine = docContent.split("\n").find((l) => l.trim().length > 0)?.trim() || "Meeting Notes";
+
   // Parse with the improved AI prompt
-  const parsed = await parseNotesWithAI(docContent, "", "");
+  const parsed = await parseNotesWithAI(docContent, firstLine, "");
   if (!parsed) return "Impossibile analizzare il documento con AI.";
 
   const title = parsed.meetingTitle ?? "Meeting";
@@ -280,20 +317,34 @@ export async function processMeetingDocById(docUrlOrId?: string, sendTo?: string
   const actionItems = parsed.actionItems ?? [];
   const { summary, keyDecisions = [], openQuestions = [] } = parsed;
 
-  // Send email if a specific recipient was provided
+  // Resolve email recipients: explicit sendTo takes priority, otherwise auto-lookup parsed attendees
+  const emailTargets: string[] = [];
   if (sendTo) {
-    // Resolve name → email from employees table if needed
-    let emailTarget = sendTo.includes("@") ? sendTo : null;
-    if (!emailTarget) {
+    const emailTarget = sendTo.includes("@") ? sendTo : null;
+    if (emailTarget) {
+      emailTargets.push(emailTarget);
+    } else {
       const [emp] = await db.select({ email: employees.email })
         .from(employees)
         .where(sql`${employees.name} ILIKE ${"%" + sendTo + "%"}`)
         .limit(1);
-      emailTarget = emp?.email ?? null;
+      if (emp?.email) emailTargets.push(emp.email);
     }
-    if (emailTarget) {
-      await sendMeetingEmail([emailTarget], title, dateStr, parsed).catch(() => {});
+  } else if (parsed.attendees?.length) {
+    // Auto-lookup attendee emails from employees table
+    for (const name of parsed.attendees) {
+      const firstName = name.split(" ")[0];
+      if (firstName.length < 2) continue;
+      const [emp] = await db.select({ email: employees.email })
+        .from(employees)
+        .where(sql`${employees.name} ILIKE ${"%" + firstName + "%"}`)
+        .limit(1);
+      if (emp?.email && !emailTargets.includes(emp.email)) emailTargets.push(emp.email);
     }
+  }
+
+  if (emailTargets.length > 0) {
+    await sendMeetingEmail(emailTargets, title, dateStr, parsed).catch(() => {});
   }
 
   // Create Notion action items with priority
@@ -311,16 +362,25 @@ export async function processMeetingDocById(docUrlOrId?: string, sendTo?: string
     }
   }
 
+  // Persist meeting to DB for rebuildBrainFromDB recovery
+  await db.insert(intelligenceEvents).values({
+    type: "meeting_notes",
+    content: `${title}: ${summary.slice(0, 200)}`,
+    status: "active",
+    metadata: {
+      driveFileId: resolvedDocId,
+      autoDiscovered: !!autoFoundMessageId,
+      title, date: dateISO,
+      attendees: parsed.attendees ?? [],
+      keyDecisions,
+      actionItems,
+      openQuestions,
+    },
+  }).catch(() => {});
+
   // Mark email as read if auto-found
   if (autoFoundMessageId) {
     await markEmailAsRead(autoFoundMessageId, auth).catch(() => {});
-    // Record as processed
-    await db.insert(intelligenceEvents).values({
-      type: "meeting_notes",
-      content: title,
-      status: "active",
-      metadata: { driveFileId: resolvedDocId, autoDiscovered: true },
-    }).catch(() => {});
   }
 
   // Slack notification
@@ -429,15 +489,22 @@ export async function checkRecentMeetings(): Promise<void> {
         continue;
       }
 
-      // Mark as processed BEFORE heavy operations to prevent duplicate runs
-      await markAsProcessed(event.id, docId, title);
-
       // Parse notes with Claude
       const parsed = await parseNotesWithAI(docContent, title, attendeeNames);
       if (!parsed) {
         logger.warn({ meeting: title }, "Failed to parse meeting notes — skipping email/Notion");
         continue;
       }
+
+      // Mark as processed with full metadata (for rebuildBrainFromDB recovery)
+      await markAsProcessed(event.id, docId, title, {
+        date: dateISO,
+        attendees: attendees.map((a: any) => a.displayName ?? a.email ?? "?"),
+        keyDecisions: parsed.keyDecisions ?? [],
+        actionItems: parsed.actionItems ?? [],
+        openQuestions: parsed.openQuestions ?? [],
+        summary: parsed.summary,
+      });
 
       // Send email to all attendees
       if (attendeeEmails.length > 0) {
@@ -501,7 +568,6 @@ async function checkMeetingNotesEmails(): Promise<void> {
   const auth = getGoogleAuth();
   if (!auth) return;
 
-  const gmail = google.drive({ version: "v3", auth }) as any; // reuse auth
   const gmailClient = google.gmail({ version: "v1", auth });
 
   try {

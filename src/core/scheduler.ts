@@ -37,6 +37,7 @@ interface ScheduledJobs {
   eodCollect?: cron.ScheduledTask;
   meetingNotes?: cron.ScheduledTask;
   calendarWatchRenewal?: cron.ScheduledTask;
+  brainCleanup?: cron.ScheduledTask;
 }
 
 const jobs: ScheduledJobs = {};
@@ -74,6 +75,7 @@ export function setupSchedules(callbacks: {
   eodCollect: JobCallback;
   meetingNotes: JobCallback;
   calendarWatchRenewal: JobCallback;
+  brainCleanup: JobCallback;
 }): void {
   // Daily operations report
   const { DAILY_REPORT_HOUR: h, DAILY_REPORT_MINUTE: m, TIMEZONE: tz } = config;
@@ -285,8 +287,8 @@ export function setupSchedules(callbacks: {
     );
   }, { timezone: tz });
 
-  // Meeting notes (every 30 min during work hours)
-  jobs.meetingNotes = cron.schedule("*/30 8-19 * * 1-5", () => {
+  // Meeting notes (every 30 min — all days 7-22, webhook covers real-time)
+  jobs.meetingNotes = cron.schedule("*/30 7-22 * * *", () => {
     callbacks.meetingNotes().catch((err) =>
       logger.error({ err }, "Meeting notes check failed"),
     );
@@ -296,6 +298,13 @@ export function setupSchedules(callbacks: {
   jobs.calendarWatchRenewal = cron.schedule("0 3 */6 * *", () => {
     callbacks.calendarWatchRenewal().catch((err) =>
       logger.error({ err }, "Calendar watch renewal failed"),
+    );
+  }, { timezone: tz });
+
+  // Brain cleanup — delete old intelligence_events rows (Sunday 03:30)
+  jobs.brainCleanup = cron.schedule("30 3 * * 0", () => {
+    callbacks.brainCleanup().catch((err) =>
+      logger.error({ err }, "Brain cleanup failed"),
     );
   }, { timezone: tz });
 
