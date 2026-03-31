@@ -6,6 +6,48 @@ import { getGoogleAuth, isGoogleConfigured } from "../core/google-auth.js";
 import type { GoogleAuth } from "../core/google-auth.js";
 import { logger } from "../utils/logger.js";
 
+/**
+ * Register a Google Calendar push notification watch.
+ * Google will POST to /webhooks/calendar whenever calendar events change.
+ * Watch expires in ~7 days — renew every 6 days via cron.
+ */
+export async function registerCalendarWatch(): Promise<void> {
+  if (!isGoogleConfigured()) {
+    logger.debug("Calendar watch skipped — Google not configured");
+    return;
+  }
+  if (!config.RAILWAY_PUBLIC_DOMAIN || !config.CALENDAR_WEBHOOK_TOKEN) {
+    logger.debug("Calendar watch skipped — RAILWAY_PUBLIC_DOMAIN or CALENDAR_WEBHOOK_TOKEN not set");
+    return;
+  }
+
+  const auth = getGoogleAuth();
+  if (!auth) return;
+
+  const calendar = google.calendar({ version: "v3", auth });
+  const address = `https://${config.RAILWAY_PUBLIC_DOMAIN}/webhooks/calendar`;
+  const expiration = String(Date.now() + 6 * 24 * 60 * 60 * 1000); // 6 days in ms
+
+  try {
+    const res = await calendar.events.watch({
+      calendarId: "primary",
+      requestBody: {
+        id: `coo-watch-${Date.now()}`,
+        type: "web_hook",
+        address,
+        token: config.CALENDAR_WEBHOOK_TOKEN,
+        expiration,
+      },
+    });
+    logger.info(
+      { channelId: res.data.id, expiration: res.data.expiration },
+      "Calendar push watch registered",
+    );
+  } catch (err) {
+    logger.error({ err }, "Failed to register calendar watch");
+  }
+}
+
 export async function deleteCalendarEvent(
   eventId: string,
   authOverride?: GoogleAuth | null,

@@ -36,6 +36,7 @@ interface ScheduledJobs {
   eodPrompts?: cron.ScheduledTask;
   eodCollect?: cron.ScheduledTask;
   meetingNotes?: cron.ScheduledTask;
+  calendarWatchRenewal?: cron.ScheduledTask;
 }
 
 const jobs: ScheduledJobs = {};
@@ -72,6 +73,7 @@ export function setupSchedules(callbacks: {
   eodPrompts: JobCallback;
   eodCollect: JobCallback;
   meetingNotes: JobCallback;
+  calendarWatchRenewal: JobCallback;
 }): void {
   // Daily operations report
   const { DAILY_REPORT_HOUR: h, DAILY_REPORT_MINUTE: m, TIMEZONE: tz } = config;
@@ -287,6 +289,13 @@ export function setupSchedules(callbacks: {
   jobs.meetingNotes = cron.schedule("*/30 8-19 * * 1-5", () => {
     callbacks.meetingNotes().catch((err) =>
       logger.error({ err }, "Meeting notes check failed"),
+    );
+  }, { timezone: tz });
+
+  // Calendar push watch renewal (every 6 days at 03:00 — watch expires after 7 days)
+  jobs.calendarWatchRenewal = cron.schedule("0 3 */6 * *", () => {
+    callbacks.calendarWatchRenewal().catch((err) =>
+      logger.error({ err }, "Calendar watch renewal failed"),
     );
   }, { timezone: tz });
 

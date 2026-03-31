@@ -3,7 +3,7 @@ import { disconnectRedis } from "./utils/conversation-cache.js";
 import { mcpManager } from "./core/mcp-client.js";
 import { setupSchedules, stopSchedules } from "./core/scheduler.js";
 import { initDb, closeDb } from "./models/database.js";
-import { checkUpcomingEvents } from "./services/calendar-sync.js";
+import { checkUpcomingEvents, registerCalendarWatch } from "./services/calendar-sync.js";
 import { checkPendingMessages } from "./services/chat-monitor.js";
 import { generateAndSendDailyReport } from "./services/daily-reporter.js";
 import { checkImportantEmails } from "./services/email-manager.js";
@@ -32,6 +32,7 @@ import { sendEodPrompts, collectEodResponses } from "./services/eod-reports.js";
 import { checkRecentMeetings } from "./services/meeting-notes.js";
 import { startSlackMonitor, stopSlackMonitor } from "./bot/slack-monitor.js";
 import { handleOAuthCallback } from "./bot/onboarding.js";
+import { config } from "./config.js";
 import { logger } from "./utils/logger.js";
 
 async function main(): Promise<void> {
@@ -76,10 +77,14 @@ async function main(): Promise<void> {
     eodPrompts: async () => { await sendEodPrompts(); },
     eodCollect: async () => { await collectEodResponses(); },
     meetingNotes: async () => { await checkRecentMeetings(); },
+    calendarWatchRenewal: () => registerCalendarWatch(),
   });
 
   // Discover and link Notion users to employees
   discoverNotionUsers().catch((err) => logger.warn({ err }, "Notion user discovery failed at startup"));
+
+  // Register Google Calendar push notification watch (near-real-time meeting detection)
+  registerCalendarWatch().catch((err) => logger.warn({ err }, "Calendar watch registration failed at startup"));
 
   // Start Slack monitor (handles all bot interactions, slash commands, and channel monitoring)
   const slackStarted = await startSlackMonitor();
@@ -91,6 +96,34 @@ async function main(): Promise<void> {
   const port = process.env.PORT || 3000;
   createServer(async (req, res) => {
     const url = new URL(req.url || "/", `http://localhost:${port}`);
+
+    // Google Calendar push notification webhook
+    if (url.pathname === "/webhooks/calendar" && req.method === "POST") {
+      const token = req.headers["x-goog-channel-token"];
+      const state = req.headers["x-goog-resource-state"];
+
+      // Consume body (required to keep connection clean)
+      req.resume();
+
+      if (config.CALENDAR_WEBHOOK_TOKEN && token !== config.CALENDAR_WEBHOOK_TOKEN) {
+        res.writeHead(403);
+        res.end();
+        return;
+      }
+
+      res.writeHead(200);
+      res.end();
+
+      // "sync" is the initial handshake — skip processing
+      if (state === "sync") return;
+
+      // "exists" means calendar was modified — check for new meeting notes
+      logger.info({ state }, "Calendar push notification received");
+      checkRecentMeetings().catch((err) =>
+        logger.error({ err }, "checkRecentMeetings triggered by webhook failed"),
+      );
+      return;
+    }
 
     if (url.pathname === "/oauth/callback") {
       const code = url.searchParams.get("code");
