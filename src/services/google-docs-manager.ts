@@ -70,31 +70,23 @@ export async function createGoogleDoc(
 }
 
 /**
- * Read plain text content from an existing Google Doc.
+ * Read plain text content from an existing Google Doc via Drive export API.
+ * Uses drive scope (already in token) — more reliable than Docs API.
  */
 export async function readGoogleDocText(docId: string, authOverride?: GoogleAuth | null): Promise<string | null> {
   const auth = authOverride ?? getGoogleAuth();
   if (!auth) return null;
 
   try {
-    const docs = google.docs({ version: "v1", auth });
-    const doc = await docs.documents.get({ documentId: docId });
-    const elements = doc.data.body?.content ?? [];
-    const lines: string[] = [];
-
-    for (const element of elements) {
-      if (element.paragraph) {
-        const text = (element.paragraph.elements ?? [])
-          .map((e: any) => e.textRun?.content ?? "")
-          .join("");
-        const trimmed = text.trimEnd();
-        if (trimmed) lines.push(trimmed);
-      }
-    }
-
-    return lines.join("\n").trim() || null;
+    const drive = google.drive({ version: "v3", auth });
+    const res = await drive.files.export(
+      { fileId: docId, mimeType: "text/plain" },
+      { responseType: "text" },
+    );
+    const text = typeof res.data === "string" ? res.data : String(res.data ?? "");
+    return text.trim() || null;
   } catch (err) {
-    logger.error({ err, docId }, "Failed to read Google Doc");
+    logger.error({ err, docId }, "Failed to read Google Doc via Drive export");
     return null;
   }
 }
