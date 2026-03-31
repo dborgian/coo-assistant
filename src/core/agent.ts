@@ -29,7 +29,7 @@ import { getTopics, getClientMentions } from "../services/topic-analyzer.js";
 import { getMeetingStats } from "../services/meeting-intelligence.js";
 import { createGoogleDoc } from "../services/google-docs-manager.js";
 import { processMeetingDocById } from "../services/meeting-notes.js";
-import { loadBrainContext, getBrainStatus, resolveDecision } from "../services/company-brain.js";
+import { loadBrainContext, getBrainStatus, resolveDecision, queryBrain, addFactToBrain } from "../services/company-brain.js";
 import { unifiedSearch } from "../services/unified-search.js";
 import type { Tool, ToolResultBlockParam } from "@anthropic-ai/sdk/resources/messages.js";
 import type { AccessRole } from "../bot/auth-types.js";
@@ -762,6 +762,41 @@ ${JSON.stringify(data, null, 2)}`;
         type: "object" as const,
         properties: {},
         required: [],
+      },
+    },
+    {
+      name: "query_brain",
+      description: "Search the Company Brain for specific information about meetings, decisions, or company facts. Use for: 'cosa sai di X?', 'chi è responsabile di Y?', 'quando abbiamo deciso Z?', 'trova informazioni su progetto X'.",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          query: { type: "string", description: "Keywords to search for in the brain" },
+          category: { type: "string", enum: ["meeting", "decision", "fact"], description: "Limit search to a specific category (optional)" },
+        },
+        required: ["query"],
+      },
+    },
+    {
+      name: "add_brain_fact",
+      description: "Manually add a stable company fact to the brain memory. Use for: 'ricorda che...', 'aggiungi al cervello...', 'salva questa informazione: ...'.",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          fact: { type: "string", description: "The fact to remember (clear, self-contained sentence)" },
+          category: { type: "string", enum: ["team", "project", "client", "process", "decision"], description: "Category of the fact" },
+        },
+        required: ["fact"],
+      },
+    },
+    {
+      name: "resolve_decision",
+      description: "Mark an open decision as resolved and remove it from the brain. Use for: 'la decisione X è stata presa', 'chiudi la decisione su Y', 'segna come risolta la questione Z'.",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          decision_text: { type: "string", description: "Keyword or partial text of the decision to resolve" },
+        },
+        required: ["decision_text"],
       },
     },
   ];
@@ -1642,6 +1677,20 @@ Genera 5-10 task concreti e actionable.`,
 
       if (name === "brain_status") {
         return await getBrainStatus();
+      }
+
+      if (name === "query_brain") {
+        return await queryBrain(input.query as string, input.category as string | undefined);
+      }
+
+      if (name === "add_brain_fact") {
+        await addFactToBrain(input.fact as string, input.category as "team" | "project" | "client" | "process" | "decision" | undefined);
+        return `Fatto aggiunto al cervello: "${input.fact}"`;
+      }
+
+      if (name === "resolve_decision") {
+        await resolveDecision(input.decision_text as string);
+        return `Decisione "${input.decision_text}" marcata come risolta e rimossa dalle decisioni aperte.`;
       }
 
       if (name === "unified_search") {

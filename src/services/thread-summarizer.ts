@@ -3,6 +3,7 @@ import { agent } from "../core/agent.js";
 import { db } from "../models/database.js";
 import { messageLogs } from "../models/schema.js";
 import { sendSlackMessage, getNotificationsChannel } from "../bot/slack-monitor.js";
+import { extractAndSaveFacts } from "./company-brain.js";
 import { logger } from "../utils/logger.js";
 
 const THREAD_QUIET_MINUTES = 30;
@@ -168,6 +169,13 @@ export async function generateDailySlackDigest(): Promise<void> {
           `\uD83D\uDCCA Digest ${ch.chatTitle} — ${new Date().toLocaleDateString("it-IT")}\n\n${summary}`,
         );
       }
+
+      // Feed Slack conversations to the Company Brain (fire-and-forget)
+      extractAndSaveFacts(
+        transcript,
+        `Slack #${ch.chatTitle}`,
+        new Date().toISOString().split("T")[0],
+      ).catch(() => {});
     }
   }
 

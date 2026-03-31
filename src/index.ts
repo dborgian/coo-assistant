@@ -30,6 +30,7 @@ import { detectMeetingOverload } from "./services/meeting-intelligence.js";
 import { checkAndSummarizeThreads, generateDailySlackDigest } from "./services/thread-summarizer.js";
 import { sendEodPrompts, collectEodResponses } from "./services/eod-reports.js";
 import { checkRecentMeetings } from "./services/meeting-notes.js";
+import { rebuildBrainFromDB } from "./services/company-brain.js";
 import { startSlackMonitor, stopSlackMonitor } from "./bot/slack-monitor.js";
 import { handleOAuthCallback } from "./bot/onboarding.js";
 import { config } from "./config.js";
@@ -82,6 +83,9 @@ async function main(): Promise<void> {
 
   // Discover and link Notion users to employees
   discoverNotionUsers().catch((err) => logger.warn({ err }, "Notion user discovery failed at startup"));
+
+  // Rebuild Company Brain from PostgreSQL if Redis is empty (cold start / Redis reset)
+  rebuildBrainFromDB().catch((err) => logger.warn({ err }, "Brain rebuild from DB failed at startup"));
 
   // Register Google Calendar push notification watch (near-real-time meeting detection)
   registerCalendarWatch().catch((err) => logger.warn({ err }, "Calendar watch registration failed at startup"));
