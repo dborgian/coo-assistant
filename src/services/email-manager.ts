@@ -120,6 +120,54 @@ export async function checkImportantEmails(): Promise<void> {
   }
 }
 
+/** Get the plain-text body of an email message by ID. */
+export async function getEmailBody(messageId: string, authOverride?: GoogleAuth | null): Promise<string | null> {
+  const auth = authOverride ?? getGoogleAuth();
+  if (!auth) return null;
+
+  const gmail = google.gmail({ version: "v1", auth });
+  try {
+    const msg = await gmail.users.messages.get({ userId: "me", id: messageId, format: "full" });
+
+    function extractText(payload: any): string {
+      if (!payload) return "";
+      if (payload.body?.data) {
+        return Buffer.from(payload.body.data, "base64url").toString("utf-8");
+      }
+      if (payload.parts) {
+        for (const part of payload.parts) {
+          if (part.mimeType === "text/plain" || part.mimeType === "text/html") {
+            const t = extractText(part);
+            if (t) return t;
+          }
+        }
+        for (const part of payload.parts) {
+          const t = extractText(part);
+          if (t) return t;
+        }
+      }
+      return "";
+    }
+
+    return extractText(msg.data.payload) || null;
+  } catch (err) {
+    logger.error({ err, messageId }, "Failed to get email body");
+    return null;
+  }
+}
+
+/** Mark a Gmail message as read. */
+export async function markEmailAsRead(messageId: string, authOverride?: GoogleAuth | null): Promise<void> {
+  const auth = authOverride ?? getGoogleAuth();
+  if (!auth) return;
+  const gmail = google.gmail({ version: "v1", auth });
+  await gmail.users.messages.modify({
+    userId: "me",
+    id: messageId,
+    requestBody: { removeLabelIds: ["UNREAD"] },
+  }).catch(() => {});
+}
+
 export async function sendEmail(
   to: string,
   subject: string,

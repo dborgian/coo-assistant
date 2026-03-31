@@ -5,7 +5,7 @@ import { config } from "../config.js";
 import { db } from "../models/database.js";
 import { intelligenceEvents, employees } from "../models/schema.js";
 import { getGoogleAuth, isGoogleConfigured } from "../core/google-auth.js";
-import { sendEmail } from "./email-manager.js";
+import { sendEmail, getEmailBody, markEmailAsRead } from "./email-manager.js";
 import { createNotionMeetingAction } from "./notion-sync.js";
 import { readGoogleDocText } from "./google-docs-manager.js";
 import { sendSlackMessage, getNotificationsChannel } from "../bot/slack-monitor.js";
@@ -346,5 +346,69 @@ export async function checkRecentMeetings(): Promise<void> {
     }
   } catch (err) {
     logger.error({ err }, "Failed to check recent meetings");
+  }
+
+  // Also check Gmail for Gemini meeting notes emails
+  await checkMeetingNotesEmails();
+}
+
+/**
+ * Monitor Gmail for emails from Google Meet Gemini ("Meeting notes: ...").
+ * Extracts the Doc link, processes notes, and marks the email as read.
+ */
+async function checkMeetingNotesEmails(): Promise<void> {
+  if (!isGoogleConfigured()) return;
+
+  const auth = getGoogleAuth();
+  if (!auth) return;
+
+  const gmail = google.drive({ version: "v3", auth }) as any; // reuse auth
+  const gmailClient = google.gmail({ version: "v1", auth });
+
+  try {
+    const res = await gmailClient.users.messages.list({
+      userId: "me",
+      q: 'from:meet-recordings-noreply@google.com subject:"Meeting notes" is:unread',
+      maxResults: 10,
+    });
+
+    const messages = res.data.messages ?? [];
+
+    for (const msg of messages) {
+      if (!msg.id) continue;
+
+      const body = await getEmailBody(msg.id, auth);
+      if (!body) { await markEmailAsRead(msg.id, auth); continue; }
+
+      // Extract Google Doc URL from email body
+      const docMatch = body.match(/https:\/\/docs\.google\.com\/document\/d\/([a-zA-Z0-9_-]{20,})/);
+      if (!docMatch) { await markEmailAsRead(msg.id, auth); continue; }
+
+      const docId = docMatch[1];
+
+      // Skip if already processed by driveFileId
+      const [existing] = await db
+        .select({ id: intelligenceEvents.id })
+        .from(intelligenceEvents)
+        .where(
+          and(
+            eq(intelligenceEvents.type, "meeting_notes"),
+            sql`${intelligenceEvents.metadata}->>'driveFileId' = ${docId}`,
+          ),
+        )
+        .limit(1);
+
+      if (existing) {
+        await markEmailAsRead(msg.id, auth);
+        continue;
+      }
+
+      logger.info({ docId, messageId: msg.id }, "Found Gemini meeting notes email — processing");
+
+      await processMeetingDocById(docId);
+      await markEmailAsRead(msg.id, auth);
+    }
+  } catch (err) {
+    logger.error({ err }, "Failed to check meeting notes emails");
   }
 }
