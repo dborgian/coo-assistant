@@ -744,14 +744,14 @@ ${JSON.stringify(data, null, 2)}`;
     },
     {
       name: "process_meeting_notes",
-      description: "Process a Google Doc as meeting notes: reads the doc, generates an AI summary, extracts action items, creates Notion tasks, and optionally sends the summary by email. Use when the user shares a Google Doc URL/ID or says 'riassumi il meet', 'processa le note del meeting', 'fai il riassunto e invialo a...'.",
+      description: "Process meeting notes from a Google Doc: generates AI summary, extracts action items with priority, creates Notion tasks, optionally sends email. If no doc_url is provided, automatically finds the latest unprocessed meeting notes email in Gmail. Use for: 'riassumi il meet', 'processa le note', 'fai il riassunto dell\\'ultimo meeting', 'invia il riassunto a...'.",
       input_schema: {
         type: "object" as const,
         properties: {
-          doc_url: { type: "string", description: "Google Doc URL or ID to process" },
-          send_to: { type: "string", description: "Email address or name to send the summary to (optional — if not provided, summary is sent to attendees found in the doc)" },
+          doc_url: { type: "string", description: "Google Doc URL or ID (optional — omit to auto-find latest meeting notes from Gmail)" },
+          send_to: { type: "string", description: "Email address or person name to send the summary to (optional)" },
         },
-        required: ["doc_url"],
+        required: [],
       },
     },
   ];

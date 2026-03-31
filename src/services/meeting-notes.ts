@@ -15,11 +15,20 @@ interface ActionItem {
   title: string;
   assignee?: string;
   dueDate?: string;
+  priority?: "high" | "medium" | "low";
+  context?: string; // why this matters
 }
 
 interface ParsedNotes {
+  meetingTitle?: string;
+  date?: string;
+  attendees?: string[];
+  meetingType?: string; // standup, planning, client call, retrospective, etc.
   summary: string;
+  keyDecisions: string[];
   actionItems: ActionItem[];
+  openQuestions: string[];
+  nextMeetingDate?: string;
 }
 
 async function isAlreadyProcessed(calendarEventId: string): Promise<boolean> {
@@ -46,24 +55,93 @@ async function markAsProcessed(calendarEventId: string, driveFileId: string, mee
 }
 
 async function parseNotesWithAI(docContent: string, meetingTitle: string, attendeeNames: string): Promise<ParsedNotes | null> {
-  const prompt = `Analizza queste note di meeting e restituisci un JSON con questa struttura esatta:
-{"summary": "riassunto in 2-3 frasi", "actionItems": [{"title": "cosa fare", "assignee": "nome o null", "dueDate": "YYYY-MM-DD o null"}]}
+  const prompt = `Sei un assistente COO esperto nell'analisi di meeting aziendali. Analizza queste note e restituisci un JSON strutturato.
+
+REGOLE:
+- summary: 2-4 frasi che spiegano COSA è stato discusso e PERCHÉ era importante
+- keyDecisions: solo decisioni concrete prese (non argomenti discussi) — array vuoto se nessuna
+- actionItems: solo impegni CONCRETI con un responsabile chiaro. Per ogni item:
+  * title: azione specifica e misurabile (non vaga)
+  * assignee: nome della persona responsabile (null se non specificato)
+  * dueDate: scadenza YYYY-MM-DD se menzionata (null altrimenti)
+  * priority: "high" se urgente/bloccante, "medium" se importante, "low" se nice-to-have
+  * context: una frase che spiega PERCHÉ questo task è necessario e il suo impatto
+- openQuestions: domande rimaste aperte o punti da chiarire in futuro
+- meetingType: tipo di meeting (standup/planning/retrospective/client_call/strategy/1on1/altro)
+- nextMeetingDate: data prossimo meeting YYYY-MM-DD se menzionata
+
+STRUTTURA JSON:
+{
+  "meetingTitle": "${meetingTitle}",
+  "attendees": [${attendeeNames ? `"${attendeeNames.split(", ").join('", "')}"` : ""}],
+  "meetingType": "...",
+  "summary": "...",
+  "keyDecisions": ["...", "..."],
+  "actionItems": [
+    {"title": "...", "assignee": "...", "dueDate": "...", "priority": "high|medium|low", "context": "..."}
+  ],
+  "openQuestions": ["...", "..."],
+  "nextMeetingDate": null
+}
 
 Meeting: ${meetingTitle}
 Partecipanti: ${attendeeNames}
 
 NOTE:
-${docContent.slice(0, 6000)}
+${docContent.slice(0, 8000)}
 
-Rispondi SOLO con il JSON, nessun testo prima o dopo.`;
+Rispondi SOLO con il JSON valido, nessun testo prima o dopo.`;
 
   try {
     const raw = await agent.think(prompt);
     const match = raw.match(/\{[\s\S]*\}/);
     if (!match) return null;
-    return JSON.parse(match[0]) as ParsedNotes;
+    const parsed = JSON.parse(match[0]) as ParsedNotes;
+    // Ensure required fields exist
+    if (!parsed.summary) return null;
+    if (!parsed.keyDecisions) parsed.keyDecisions = [];
+    if (!parsed.actionItems) parsed.actionItems = [];
+    if (!parsed.openQuestions) parsed.openQuestions = [];
+    return parsed;
   } catch (err) {
     logger.warn({ err }, "Failed to parse meeting notes JSON");
+    return null;
+  }
+}
+
+/** Search Gmail for the latest unprocessed Gemini meeting notes email. Returns Doc ID or null. */
+async function findLatestMeetingNotesDoc(): Promise<{ docId: string; messageId: string } | null> {
+  const auth = getGoogleAuth();
+  if (!auth) return null;
+
+  const gmail = google.gmail({ version: "v1", auth });
+  try {
+    const res = await gmail.users.messages.list({
+      userId: "me",
+      q: 'subject:"Meeting notes" is:unread',
+      maxResults: 5,
+    });
+
+    const messages = res.data.messages ?? [];
+    for (const msg of messages) {
+      if (!msg.id) continue;
+      const body = await getEmailBody(msg.id, auth);
+      if (!body) continue;
+      const docMatch = body.match(/https:\/\/docs\.google\.com\/document\/d\/([a-zA-Z0-9_-]{20,})/);
+      if (!docMatch) continue;
+      const docId = docMatch[1];
+      // Check if already processed
+      const [existing] = await db
+        .select({ id: intelligenceEvents.id })
+        .from(intelligenceEvents)
+        .where(and(eq(intelligenceEvents.type, "meeting_notes"), sql`${intelligenceEvents.metadata}->>'driveFileId' = ${docId}`))
+        .limit(1);
+      if (existing) continue;
+      return { docId, messageId: msg.id };
+    }
+    return null;
+  } catch (err) {
+    logger.error({ err }, "Failed to search for meeting notes emails");
     return null;
   }
 }
@@ -98,18 +176,30 @@ async function sendMeetingEmail(
   dateStr: string,
   parsed: ParsedNotes,
 ): Promise<void> {
+  const priorityLabel: Record<string, string> = { high: "🔴 Alta", medium: "🟡 Media", low: "🟢 Bassa" };
+
   const actionItemsText = parsed.actionItems.length
     ? parsed.actionItems
         .map((a, i) => {
           let line = `${i + 1}. ${a.title}`;
-          if (a.assignee) line += ` — ${a.assignee}`;
+          if (a.assignee) line += ` → ${a.assignee}`;
           if (a.dueDate) line += ` (scade ${a.dueDate})`;
+          if (a.priority) line += ` [${priorityLabel[a.priority] ?? a.priority}]`;
+          if (a.context) line += `\n   ↳ ${a.context}`;
           return line;
         })
         .join("\n")
     : "Nessun action item identificato.";
 
-  const body = `Ciao,
+  const decisionsText = parsed.keyDecisions?.length
+    ? parsed.keyDecisions.map((d, i) => `${i + 1}. ${d}`).join("\n")
+    : "Nessuna decisione formale.";
+
+  const openQuestionsText = parsed.openQuestions?.length
+    ? parsed.openQuestions.map((q, i) => `${i + 1}. ${q}`).join("\n")
+    : "";
+
+  const body = [`Ciao,
 
 di seguito il riepilogo del meeting "${meetingTitle}" del ${dateStr}.
 
@@ -119,13 +209,18 @@ RIASSUNTO
 ${parsed.summary}
 
 ─────────────────────────────
+DECISIONI PRESE
+─────────────────────────────
+${decisionsText}
+
+─────────────────────────────
 ACTION ITEMS
 ─────────────────────────────
-${actionItemsText}
-
-─────────────────────────────
-
-Questo messaggio è stato generato automaticamente dal COO Assistant.`;
+${actionItemsText}`,
+    openQuestionsText ? `\n─────────────────────────────\nDOMINDE APERTE\n─────────────────────────────\n${openQuestionsText}` : "",
+    parsed.nextMeetingDate ? `\n📅 Prossimo meeting: ${parsed.nextMeetingDate}` : "",
+    "\n─────────────────────────────\n\nQuesto messaggio è stato generato automaticamente dal COO Assistant.",
+  ].join("");
 
   const subject = `Riepilogo meeting — ${meetingTitle} — ${dateStr}`;
 
@@ -147,55 +242,60 @@ function extractDocId(urlOrId: string): string {
  * Reads the doc, extracts info via AI, sends emails, creates Notion tasks.
  * Returns a human-readable status message.
  */
-export async function processMeetingDocById(docUrlOrId: string, sendTo?: string): Promise<string> {
+export async function processMeetingDocById(docUrlOrId?: string, sendTo?: string): Promise<string> {
   if (!isGoogleConfigured()) return "Google non configurato.";
 
   const auth = getGoogleAuth();
   if (!auth) return "Auth Google non disponibile.";
 
-  const docId = extractDocId(docUrlOrId);
+  // Auto-discovery: if no URL provided, find the latest unprocessed meeting notes email
+  let resolvedDocId: string;
+  let autoFoundMessageId: string | null = null;
 
-  const docContent = await readGoogleDocText(docId, auth);
+  if (!docUrlOrId) {
+    const found = await findLatestMeetingNotesDoc();
+    if (!found) return "Nessun meeting notes email non processato trovato in Gmail. Passa un URL del Google Doc.";
+    resolvedDocId = found.docId;
+    autoFoundMessageId = found.messageId;
+  } else {
+    resolvedDocId = extractDocId(docUrlOrId);
+  }
+
+  const docContent = await readGoogleDocText(resolvedDocId, auth);
   if (!docContent || docContent.length < 30) {
     return "Documento vuoto o non accessibile. Verifica che il bot abbia accesso al Doc.";
   }
 
-  // Let AI extract all metadata from the doc itself
-  const metaPrompt = `Analizza queste note di meeting e restituisci JSON con questa struttura esatta:
-{"meetingTitle": "titolo meeting", "date": "YYYY-MM-DD o null", "attendees": ["nome1", "nome2"], "summary": "riassunto in 2-3 frasi", "actionItems": [{"title": "cosa fare", "assignee": "nome o null", "dueDate": "YYYY-MM-DD o null"}]}
+  // Parse with the improved AI prompt
+  const parsed = await parseNotesWithAI(docContent, "", "");
+  if (!parsed) return "Impossibile analizzare il documento con AI.";
 
-NOTE:
-${docContent.slice(0, 6000)}
-
-Rispondi SOLO con il JSON.`;
-
-  let parsed: any;
-  try {
-    const raw = await agent.think(metaPrompt);
-    const match = raw.match(/\{[\s\S]*\}/);
-    if (!match) return "Impossibile analizzare il documento con AI.";
-    parsed = JSON.parse(match[0]);
-  } catch {
-    return "Errore nel parsing AI delle note.";
-  }
-
-  const title: string = parsed.meetingTitle ?? "Meeting";
-  const dateStr: string = parsed.date
+  const title = parsed.meetingTitle ?? "Meeting";
+  const dateStr = parsed.date
     ? new Date(parsed.date).toLocaleDateString("it-IT")
     : new Date().toLocaleDateString("it-IT");
-  const dateISO: string = parsed.date ?? new Date().toISOString().split("T")[0];
-  const attendeeNames: string = (parsed.attendees ?? []).join(", ");
-  const actionItems: ActionItem[] = parsed.actionItems ?? [];
-  const summary: string = parsed.summary ?? "";
+  const dateISO = parsed.date ?? new Date().toISOString().split("T")[0];
+  const attendeeNames = (parsed.attendees ?? []).join(", ");
+  const actionItems = parsed.actionItems ?? [];
+  const { summary, keyDecisions = [], openQuestions = [] } = parsed;
 
   // Send email if a specific recipient was provided
   if (sendTo) {
-    const emailTarget = sendTo.includes("@") ? sendTo : null;
+    // Resolve name → email from employees table if needed
+    let emailTarget = sendTo.includes("@") ? sendTo : null;
+    if (!emailTarget) {
+      const [emp] = await db.select({ email: employees.email })
+        .from(employees)
+        .where(sql`${employees.name} ILIKE ${"%" + sendTo + "%"}`)
+        .limit(1);
+      emailTarget = emp?.email ?? null;
+    }
     if (emailTarget) {
-      await sendMeetingEmail([emailTarget], title, dateStr, { summary, actionItems }).catch(() => {});
+      await sendMeetingEmail([emailTarget], title, dateStr, parsed).catch(() => {});
     }
   }
 
+  // Create Notion action items with priority
   let notionCount = 0;
   if (config.NOTION_MEETING_ACTIONS_DATABASE_ID) {
     for (const item of actionItems) {
@@ -204,35 +304,52 @@ Rispondi SOLO con il JSON.`;
         meetingDate: dateISO,
         assignee: item.assignee ?? undefined,
         dueDate: item.dueDate ?? undefined,
-        notes: `Meeting del ${dateStr} — ${summary}`,
+        notes: item.context ? `${item.context}\n\nMeeting del ${dateStr} — ${summary}` : `Meeting del ${dateStr} — ${summary}`,
       }).catch(() => {});
       notionCount++;
     }
   }
 
+  // Mark email as read if auto-found
+  if (autoFoundMessageId) {
+    await markEmailAsRead(autoFoundMessageId, auth).catch(() => {});
+    // Record as processed
+    await db.insert(intelligenceEvents).values({
+      type: "meeting_notes",
+      content: title,
+      status: "active",
+      metadata: { driveFileId: resolvedDocId, autoDiscovered: true },
+    }).catch(() => {});
+  }
+
   // Slack notification
   const notifCh = getNotificationsChannel();
   if (notifCh) {
+    const priorityEmoji: Record<string, string> = { high: "🔴", medium: "🟡", low: "🟢" };
     const actionsList = actionItems.length
-      ? actionItems.map((a) => `• ${a.title}${a.assignee ? ` (${a.assignee})` : ""}`).join("\n")
+      ? actionItems.map((a) => `${priorityEmoji[a.priority ?? "medium"] ?? "•"} ${a.title}${a.assignee ? ` (${a.assignee})` : ""}`).join("\n")
       : "_Nessun action item_";
+    const decisionsList = keyDecisions.length ? `\n\n*Decisioni:*\n${keyDecisions.map((d) => `• ${d}`).join("\n")}` : "";
     await sendSlackMessage(
       notifCh,
-      `📋 *Meeting (manuale): ${title}* — ${dateStr}\n_${attendeeNames}_\n\n*Riassunto:* ${summary}\n\n*Action items:*\n${actionsList}`,
+      `📋 *${title}* — ${dateStr}\n_${attendeeNames}_\n\n*Riassunto:* ${summary}${decisionsList}\n\n*Action items (${notionCount} su Notion):*\n${actionsList}`,
     ).catch(() => {});
   }
 
-  logger.info({ docId, title, actions: actionItems.length }, "Meeting doc processed manually");
+  logger.info({ docId: resolvedDocId, title, actions: actionItems.length, decisions: keyDecisions.length }, "Meeting doc processed");
 
+  const priorityEmoji: Record<string, string> = { high: "🔴", medium: "🟡", low: "🟢" };
   const lines = [
     `✅ *${title}* — ${dateStr}`,
-    `👥 Partecipanti: ${attendeeNames || "non rilevati"}`,
+    `👥 ${attendeeNames || "partecipanti non rilevati"}`,
     ``,
     `*Riassunto:* ${summary}`,
+    ...(keyDecisions.length ? [``, `*Decisioni prese:*`, ...keyDecisions.map((d) => `• ${d}`)] : []),
     ``,
-    `*Action items creati su Notion (${notionCount}):*`,
-    ...actionItems.map((a) => `• ${a.title}${a.assignee ? ` → ${a.assignee}` : ""}${a.dueDate ? ` (${a.dueDate})` : ""}`),
-    ...(actionItems.length === 0 ? ["_Nessun action item trovato nel documento._"] : []),
+    `*Action items su Notion (${notionCount}):*`,
+    ...actionItems.map((a) => `${priorityEmoji[a.priority ?? "medium"] ?? "•"} ${a.title}${a.assignee ? ` → ${a.assignee}` : ""}${a.dueDate ? ` (${a.dueDate})` : ""}`),
+    ...(actionItems.length === 0 ? ["_Nessun action item trovato._"] : []),
+    ...(openQuestions.length ? [``, `*Domande aperte:*`, ...openQuestions.map((q) => `❓ ${q}`)] : []),
   ];
   return lines.join("\n");
 }
