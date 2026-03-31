@@ -157,32 +157,43 @@ export async function syncNotionToTasks(bot: Bot): Promise<void> {
     for (const nt of notionTasks) {
       // Check if already in our DB by notion ID
       const [existing] = await db
-        .select({ id: tasks.id, status: tasks.status })
+        .select({ id: tasks.id, status: tasks.status, priority: tasks.priority, dueDate: tasks.dueDate })
         .from(tasks)
         .where(sql`${tasks.externalId} LIKE ${"notion:" + nt.id + "%"}`)
         .limit(1);
 
       if (existing) {
-        // Bidirectional status sync: if Notion status changed, update our DB
+        // Bidirectional sync: propagate status, priority, dueDate changes from Notion to DB
         const notionStatus = statusMap[nt.status] ?? "pending";
-        if (existing.status !== notionStatus) {
-          await db
-            .update(tasks)
-            .set({ status: notionStatus, updatedAt: new Date() })
-            .where(eq(tasks.id, existing.id));
-          if (notionStatus === "done" || notionStatus === "cancelled") {
-            completeGoogleTask(existing.id).catch(() => {});
+        const notionPriority = priorityMap[nt.priority ?? ""] ?? null;
+        const notionDueDate = nt.dueDate ? new Date(nt.dueDate) : null;
+
+        const updates: Record<string, unknown> = {};
+        if (existing.status !== notionStatus) updates.status = notionStatus;
+        if (notionPriority && existing.priority !== notionPriority) updates.priority = notionPriority;
+        if (notionDueDate) {
+          const existingMs = existing.dueDate ? new Date(existing.dueDate).getTime() : null;
+          if (!existingMs || Math.abs(existingMs - notionDueDate.getTime()) > 60_000) {
+            updates.dueDate = notionDueDate;
+          }
+        }
+
+        if (Object.keys(updates).length > 0) {
+          updates.updatedAt = new Date();
+          await db.update(tasks).set(updates).where(eq(tasks.id, existing.id));
+          if (updates.status === "done" || updates.status === "cancelled") {
+            completeGoogleTask(existing.id).catch((e) => logger.error({ err: e, taskId: existing.id }, "Google Tasks complete failed on Notion sync"));
           }
           statusUpdated++;
         }
         continue;
       }
 
-      // Check by exact title to avoid duplicates
+      // Check by title (case-insensitive) to avoid duplicates
       const [byTitle] = await db
         .select({ id: tasks.id })
         .from(tasks)
-        .where(eq(tasks.title, nt.title))
+        .where(sql`LOWER(${tasks.title}) = LOWER(${nt.title})`)
         .limit(1);
 
       if (byTitle) continue;
@@ -217,7 +228,7 @@ export async function syncNotionToTasks(bot: Bot): Promise<void> {
         await bot.api.sendMessage(
           config.TELEGRAM_OWNER_CHAT_ID,
           `\uD83D\uDD04 Notion sync: ${imported} nuovi task importati${statusUpdated ? `, ${statusUpdated} status aggiornati` : ""}.`,
-        ).catch(() => {});
+        ).catch((e) => logger.error({ err: e }, "Telegram notification on Notion sync failed"));
       }
     }
   } catch (err) {

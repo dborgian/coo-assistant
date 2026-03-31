@@ -96,6 +96,17 @@ AZIONI CHE PUOI ESEGUIRE (usa i tools quando l'utente lo chiede):
 - Aggiungere commenti/note ai task su Notion (add_notion_comment)
 - Creare progetti su Notion (create_notion_project)
 
+GESTIONE AMBIGUITA':
+- Se un messaggio e' vago o incompleto (es. "crea task", "aggiorna", senza dettagli), chiedi subito la informazione mancante con una domanda breve e diretta. NON indovinare.
+- Se un tool restituisce "Trovati N task corrispondenti", NON proseguire: chiedi all'utente quale intende.
+- Se un tool restituisce un errore di employee non trovato, mostra la lista dei dipendenti disponibili e chiedi di specificare.
+- Se la data e' ambigua (es. "venerdì", "la prossima settimana"), usa current_datetime dal context per calcolarla esattamente.
+
+ESEMPI:
+- Utente: "crea task report" → se manca l'assignee o la scadenza, chiedi: "A chi assegno il task e entro quando?"
+- Utente: "aggiorna il task design" → se ci sono piu' task con "design" nel titolo, mostra la lista e chiedi quale.
+- Utente: "completa il task" → chiedi: "Quale task vuoi completare?"
+
 SYNC NOTION BIDIREZIONALE:
 - Task creati qui appaiono su Notion entro 1 minuto
 - Task completati/cancellati qui aggiornano lo status su Notion
@@ -727,9 +738,14 @@ ${JSON.stringify(data, null, 2)}`;
       if (name === "create_task") {
         let assignedTo: string | null = null;
         if (input.assigned_to_name) {
-          const [emp] = await db.select().from(employees)
+          const [emp] = await db.select({ id: employees.id }).from(employees)
             .where(sql`${employees.name} ILIKE ${"%" + input.assigned_to_name + "%"}`).limit(1);
-          assignedTo = emp?.id ?? null;
+          if (!emp) {
+            const allEmps = await db.select({ name: employees.name }).from(employees);
+            const names = allEmps.map((e) => e.name).join(", ");
+            return `Employee "${input.assigned_to_name}" non trovato. Dipendenti disponibili: ${names || "nessuno registrato"}.`;
+          }
+          assignedTo = emp.id;
         }
 
         const [newTask] = await db.insert(tasks).values({
@@ -744,7 +760,7 @@ ${JSON.stringify(data, null, 2)}`;
 
         // Sync to Google Tasks
         if (newTask) {
-          createGoogleTask(newTask.id).catch(() => {});
+          createGoogleTask(newTask.id).catch((e) => logger.error({ err: e, taskId: newTask.id }, "Google Tasks sync on create failed"));
         }
 
         // Sync to Notion (auto, no need to mention "notion" in the request)
@@ -759,7 +775,8 @@ ${JSON.stringify(data, null, 2)}`;
               const pageId = url.match(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/)?.[0]
                 ?? url.match(/([a-f0-9]{32})/)?.[1];
               if (pageId) {
-                db.update(tasks).set({ externalId: `notion:${pageId}` }).where(eq(tasks.id, newTask.id)).catch(() => {});
+                db.update(tasks).set({ externalId: `notion:${pageId}` }).where(eq(tasks.id, newTask.id))
+                  .catch((e) => logger.error({ err: e, taskId: newTask.id, pageId }, "DB update of Notion externalId failed"));
               }
             }
           }).catch((e) => logger.error({ err: e }, "Notion sync from create_task failed"));
@@ -782,7 +799,8 @@ ${JSON.stringify(data, null, 2)}`;
               ).catch((e) => logger.error({ err: e }, "Assignment notification failed"));
               // Mark reminderLevel so the cron doesn't re-send this checkpoint
               if (newTask?.id && level > 0) {
-                db.update(tasks).set({ reminderLevel: level }).where(eq(tasks.id, newTask.id)).catch(() => {});
+                db.update(tasks).set({ reminderLevel: level }).where(eq(tasks.id, newTask.id))
+                  .catch((e) => logger.error({ err: e, taskId: newTask.id }, "reminderLevel update failed"));
               }
             }
           }
@@ -830,9 +848,13 @@ ${JSON.stringify(data, null, 2)}`;
       }
 
       if (name === "update_task_status") {
-        const [task] = await db.select().from(tasks)
-          .where(sql`${tasks.title} ILIKE ${"%" + input.task_title + "%"}`).limit(1);
-        if (!task) return `Task "${input.task_title}" non trovato.`;
+        const matchingForStatus = await db.select().from(tasks)
+          .where(sql`${tasks.title} ILIKE ${"%" + input.task_title + "%"}`).limit(5);
+        if (!matchingForStatus.length) return `Task "${input.task_title}" non trovato.`;
+        if (matchingForStatus.length > 1) {
+          return `Trovati ${matchingForStatus.length} task corrispondenti:\n${matchingForStatus.map((t) => `- "${t.title}" (${t.status})`).join("\n")}\nSpecifica meglio il titolo.`;
+        }
+        const task = matchingForStatus[0];
         await db.update(tasks).set({ status: input.new_status, updatedAt: new Date() }).where(eq(tasks.id, task.id));
 
         // Sync status to Notion
@@ -843,9 +865,12 @@ ${JSON.stringify(data, null, 2)}`;
           );
         }
 
-        // Sync status to Google Tasks
+        // Sync status to Google Tasks + cleanup calendar event
         if (input.new_status === "done" || input.new_status === "cancelled") {
-          completeGoogleTask(task.id).catch(() => {});
+          completeGoogleTask(task.id).catch((e) => logger.error({ err: e, taskId: task.id }, "Google Tasks complete failed"));
+          if (task.calendarEventId) {
+            deleteCalendarEvent(task.calendarEventId).catch((e) => logger.error({ err: e, eventId: task.calendarEventId }, "Calendar event delete on task complete/cancel failed"));
+          }
         }
 
         // Check if completing this task unblocks others
@@ -1011,7 +1036,8 @@ ${JSON.stringify(data, null, 2)}`;
               ).catch((e) => logger.error({ err: e }, "Notion task assignment notification failed"));
               // Mark reminderLevel so the cron doesn't re-send this checkpoint
               if (notionDbTask?.id && notionLevel > 0) {
-                db.update(tasks).set({ reminderLevel: notionLevel }).where(eq(tasks.id, notionDbTask.id)).catch(() => {});
+                db.update(tasks).set({ reminderLevel: notionLevel }).where(eq(tasks.id, notionDbTask.id))
+                  .catch((e) => logger.error({ err: e, taskId: notionDbTask.id }, "reminderLevel update failed (notion_action)"));
               }
             }
           }
@@ -1253,9 +1279,14 @@ ${JSON.stringify(data, null, 2)}`;
       if (name === "create_recurring_task") {
         let assignedTo: string | null = null;
         if (input.assigned_to_name) {
-          const [emp] = await db.select().from(employees)
+          const [emp] = await db.select({ id: employees.id }).from(employees)
             .where(sql`${employees.name} ILIKE ${"%" + input.assigned_to_name + "%"}`).limit(1);
-          assignedTo = emp?.id ?? null;
+          if (!emp) {
+            const allEmps = await db.select({ name: employees.name }).from(employees);
+            const names = allEmps.map((e) => e.name).join(", ");
+            return `Employee "${input.assigned_to_name}" non trovato. Dipendenti disponibili: ${names || "nessuno registrato"}.`;
+          }
+          assignedTo = emp.id;
         }
 
         await db.insert(tasks).values({
