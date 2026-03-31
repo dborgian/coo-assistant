@@ -1,12 +1,11 @@
-import type { Bot } from "grammy";
 import { and, eq, gte, sql } from "drizzle-orm";
 import { agent } from "../core/agent.js";
-import { config } from "../config.js";
+import { sendOwnerNotification } from "../utils/notify.js";
 import { db } from "../models/database.js";
 import { employees, messageLogs, sentimentScores } from "../models/schema.js";
 import { logger } from "../utils/logger.js";
 
-export async function analyzeSentimentBatch(bot: Bot): Promise<void> {
+export async function analyzeSentimentBatch(): Promise<void> {
   const cutoff = new Date();
   cutoff.setHours(cutoff.getHours() - 4);
 
@@ -87,7 +86,7 @@ Rispondi SOLO con JSON valido: [{"name": "...", "score": 0.5, "label": "neutral"
   }
 }
 
-export async function checkSentimentAlerts(bot: Bot): Promise<void> {
+export async function checkSentimentAlerts(): Promise<void> {
   const today = new Date().toISOString().split("T")[0];
   const weekAgo = new Date();
   weekAgo.setDate(weekAgo.getDate() - 7);
@@ -114,10 +113,7 @@ export async function checkSentimentAlerts(bot: Bot): Promise<void> {
   }
 
   if (alerts.length) {
-    await bot.api.sendMessage(
-      config.TELEGRAM_OWNER_CHAT_ID,
-      `\u26A0\uFE0F Sentiment Alert:\n${alerts.join("\n")}`,
-    );
+    await sendOwnerNotification(`\u26A0\uFE0F Sentiment Alert:\n${alerts.join("\n")}`);
   }
 }
 

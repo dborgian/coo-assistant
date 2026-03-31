@@ -1,12 +1,11 @@
-import type { Bot } from "grammy";
 import { and, eq, gte, lte, sql } from "drizzle-orm";
-import { config } from "../config.js";
 import { db } from "../models/database.js";
 import { employees, intelligenceEvents, tasks } from "../models/schema.js";
-import { sendSlackMessage, getNotificationsChannel } from "../bot/slack-monitor.js";
+import { sendSlackMessage } from "../bot/slack-monitor.js";
+import { sendOwnerNotification } from "../utils/notify.js";
 import { logger } from "../utils/logger.js";
 
-export async function checkCommitmentFulfillment(bot: Bot): Promise<void> {
+export async function checkCommitmentFulfillment(): Promise<void> {
   const twoDaysAgo = new Date();
   twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
 
@@ -46,15 +45,7 @@ export async function checkCommitmentFulfillment(bot: Bot): Promise<void> {
 
   if (unfulfilled.length) {
     const msg = `\uD83D\uDD0D Promesse non mantenute (${unfulfilled.length}):\n${unfulfilled.join("\n")}`;
-    try {
-      await bot.api.sendMessage(config.TELEGRAM_OWNER_CHAT_ID, msg);
-      // Also post to Slack
-      const _notifCh = getNotificationsChannel(); if (_notifCh) {
-        await sendSlackMessage(_notifCh, msg).catch(() => {});
-      }
-    } catch (err) {
-      logger.error({ err }, "Failed to send commitment alert");
-    }
+    await sendOwnerNotification(msg).catch((err) => logger.error({ err }, "Failed to send commitment alert"));
 
     // DM each committer on Slack if they have a slackMemberId
     for (const commitment of openCommitments) {

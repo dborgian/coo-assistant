@@ -1,7 +1,6 @@
-import type { Bot } from "grammy";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { agent } from "../core/agent.js";
-import { config } from "../config.js";
+import { sendOwnerNotification } from "../utils/notify.js";
 import { db } from "../models/database.js";
 import { dailyReports, messageLogs, tasks } from "../models/schema.js";
 import { getTodayEvents } from "./calendar-sync.js";
@@ -10,7 +9,7 @@ import { getNotionWorkspaceSummary, isNotionConfigured } from "./notion-sync.js"
 import { getTeamWorkload } from "./workload-tracker.js";
 import { logger } from "../utils/logger.js";
 
-export async function generateAndSendDailyReport(bot: Bot): Promise<void> {
+export async function generateAndSendDailyReport(): Promise<void> {
   const today = new Date().toISOString().split("T")[0];
   const now = new Date();
   logger.info({ date: today }, "Generating daily report");
@@ -104,14 +103,14 @@ export async function generateAndSendDailyReport(bot: Bot): Promise<void> {
     content: reportContent,
   });
 
-  // Send via Telegram
+  // Send via Slack
   try {
     if (reportContent.length > 4000) {
       for (let i = 0; i < reportContent.length; i += 4000) {
-        await bot.api.sendMessage(config.TELEGRAM_OWNER_CHAT_ID, reportContent.slice(i, i + 4000));
+        await sendOwnerNotification(reportContent.slice(i, i + 4000));
       }
     } else {
-      await bot.api.sendMessage(config.TELEGRAM_OWNER_CHAT_ID, reportContent);
+      await sendOwnerNotification(reportContent);
     }
     logger.info({ date: today }, "Daily report sent");
   } catch (err) {

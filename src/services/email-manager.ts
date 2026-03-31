@@ -1,8 +1,7 @@
 import { google } from "googleapis";
-import type { Bot } from "grammy";
 import { and, eq, sql } from "drizzle-orm";
 import { agent } from "../core/agent.js";
-import { config } from "../config.js";
+import { sendOwnerNotification } from "../utils/notify.js";
 import { getGoogleAuth, isGoogleConfigured } from "../core/google-auth.js";
 import type { GoogleAuth } from "../core/google-auth.js";
 import { db } from "../models/database.js";
@@ -61,7 +60,7 @@ export async function getUnreadImportantEmails(maxResults = 10, authOverride?: G
   }
 }
 
-export async function checkImportantEmails(bot: Bot): Promise<void> {
+export async function checkImportantEmails(): Promise<void> {
   if (!isGoogleConfigured()) {
     logger.debug("Email check skipped — Google not configured");
     return;
@@ -116,7 +115,7 @@ export async function checkImportantEmails(bot: Bot): Promise<void> {
         .filter(Boolean)
         .join("\n");
 
-      await bot.api.sendMessage(config.TELEGRAM_OWNER_CHAT_ID, msg, { parse_mode: "HTML" });
+      await sendOwnerNotification(msg);
     }
   }
 }

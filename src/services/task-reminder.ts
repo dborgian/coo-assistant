@@ -1,11 +1,10 @@
-import type { Bot } from "grammy";
 import { and, eq, inArray, isNotNull } from "drizzle-orm";
 import { config } from "../config.js";
 import { db } from "../models/database.js";
 import { employees, tasks } from "../models/schema.js";
 import { sendEmail } from "./email-manager.js";
 import { sendSlackTaskNotification } from "../bot/slack-monitor.js";
-import { notifyAssigneeAndOwner } from "../utils/telegram.js";
+import { notifyAssigneeAndOwner } from "../utils/notify.js";
 import { logger } from "../utils/logger.js";
 
 // Checkpoint levels: 1=24h (email), 2=6h (slack), 3=1h (email+slack)
@@ -62,7 +61,7 @@ export async function sendTieredNotification(
   }
 }
 
-export async function checkAndSendReminders(bot: Bot): Promise<void> {
+export async function checkAndSendReminders(): Promise<void> {
   const now = new Date();
 
   const activeTasks = await db
@@ -111,8 +110,8 @@ export async function checkAndSendReminders(bot: Bot): Promise<void> {
         );
       }
 
-      // Always notify owner via Telegram
-      await notifyAssigneeAndOwner(bot, task.assignedTo ?? null, telegramMsg, "HTML");
+      // Always notify owner
+      await notifyAssigneeAndOwner(task.assignedTo ?? null, telegramMsg);
 
       await db.update(tasks)
         .set({ reminderLevel: targetLevel, updatedAt: now })

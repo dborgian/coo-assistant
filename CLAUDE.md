@@ -1,12 +1,12 @@
 # COO Assistant — Team Instructions
 
 ## Project Overview
-AI-powered COO assistant that orchestrates Google Workspace + Slack + Notion + Telegram for startup operations. NOT a native tool — everything via external integrations.
+AI-powered COO assistant that orchestrates Google Workspace + Slack + Notion for startup operations. NOT a native tool — everything via external integrations.
 
 ## Tech Stack
 - **Runtime:** Node.js 20+ / TypeScript (strict)
-- **Bot:** grammY (Telegram) + GramJS (userbot monitoring)
-- **AI:** @anthropic-ai/sdk (Claude Sonnet, 20 AI tools)
+- **Bot:** @slack/bolt (Socket Mode) — slash commands + DMs + channel monitoring
+- **AI:** @anthropic-ai/sdk (Claude Sonnet, 20+ AI tools)
 - **DB:** PostgreSQL via Supabase (shared pooler) + Drizzle ORM
 - **Integrations:** Google Calendar (R/W), Gmail, Drive, Slack, Notion
 - **Scheduler:** node-cron (15 jobs)
@@ -14,7 +14,8 @@ AI-powered COO assistant that orchestrates Google Workspace + Slack + Notion + T
 ## Code Conventions
 - All source in `src/`, entry point `src/index.ts`
 - Services in `src/services/` — one file per integration/feature
-- Bot commands in `src/bot/commands.ts`, callbacks in `src/bot/callbacks.ts`
+- Slack slash commands in `src/bot/slack-commands.ts`
+- Slack dashboard (Block Kit) in `src/bot/slack-dashboard.ts`
 - AI agent + tools in `src/core/agent.ts`
 - Schema in `src/models/schema.ts` (Drizzle + PostgreSQL)
 - Use Pino logger (`src/utils/logger.ts`), never console.log
@@ -28,6 +29,6 @@ AI-powered COO assistant that orchestrates Google Workspace + Slack + Notion + T
 ## Important Rules
 - All features must use external integrations (Google, Slack, Notion, etc.)
 - Do NOT build native tools (no custom calendar, no custom kanban, etc.)
-- Send Telegram messages without parse_mode when content is AI-generated
+- Notifications go via `src/utils/notify.ts` (Slack DMs) — not Telegram
 - Google OAuth scope includes full calendar R/W — refresh token must match
 - Italian language for bot responses, English for code/docs

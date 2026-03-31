@@ -1,10 +1,9 @@
-import type { Bot } from "grammy";
 import { agent } from "../core/agent.js";
-import { config } from "../config.js";
+import { sendOwnerNotification } from "../utils/notify.js";
 import { getTodayEvents } from "./calendar-sync.js";
 import { logger } from "../utils/logger.js";
 
-export async function checkMeetingActionItems(bot: Bot): Promise<void> {
+export async function checkMeetingActionItems(): Promise<void> {
   const events = await getTodayEvents().catch(() => []);
   if (!events.length) return;
 
@@ -37,10 +36,7 @@ Rispondi SOLO con gli action items come lista, senza introduzione. Esempio:
 
       if (suggestion.trim() === "NONE" || suggestion.trim().length < 10) continue;
 
-      await bot.api.sendMessage(
-        config.TELEGRAM_OWNER_CHAT_ID,
-        `\uD83D\uDCCB Meeting terminato: "${meeting.summary}"\n\nAction items suggeriti:\n${suggestion}\n\nVuoi che crei dei task? Scrivi ad esempio: "crea task follow-up meeting ${meeting.summary}"`,
-      );
+      await sendOwnerNotification(`\uD83D\uDCCB Meeting terminato: "${meeting.summary}"\n\nAction items suggeriti:\n${suggestion}\n\nVuoi che crei dei task? Scrivi ad esempio: "crea task follow-up meeting ${meeting.summary}"`);
 
       logger.info({ meeting: meeting.summary }, "Meeting action items suggested");
     } catch (err) {

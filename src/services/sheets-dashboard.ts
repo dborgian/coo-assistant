@@ -1,7 +1,7 @@
 import { google } from "googleapis";
-import type { Bot } from "grammy";
 import { and, eq, inArray, sql, gte } from "drizzle-orm";
 import { config } from "../config.js";
+import { sendOwnerNotification } from "../utils/notify.js";
 import { getGoogleAuth, isGoogleConfigured } from "../core/google-auth.js";
 import { db } from "../models/database.js";
 import { employees, employeeMetrics, tasks, messageLogs } from "../models/schema.js";
@@ -58,7 +58,7 @@ async function getOrCreateSheet(): Promise<string | null> {
   }
 }
 
-export async function exportWeeklyMetrics(bot: Bot): Promise<void> {
+export async function exportWeeklyMetrics(): Promise<void> {
   if (!isGoogleConfigured()) {
     logger.debug("Sheets export skipped — Google not configured");
     return;
@@ -187,10 +187,7 @@ export async function exportWeeklyMetrics(bot: Bot): Promise<void> {
     // Get sheet URL
     const sheetUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}`;
 
-    await bot.api.sendMessage(
-      config.TELEGRAM_OWNER_CHAT_ID,
-      `\uD83D\uDCCA Dashboard aggiornata su Google Sheets:\n${sheetUrl}`,
-    );
+    await sendOwnerNotification(`\uD83D\uDCCA Dashboard aggiornata su Google Sheets:\n${sheetUrl}`);
 
     logger.info("Weekly metrics exported to Google Sheets");
   } catch (err) {

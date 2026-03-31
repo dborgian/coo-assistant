@@ -30,7 +30,7 @@ export interface MemoryEntry {
 }
 
 /** Returns all stored memories for a given chatId. */
-export async function getUserMemories(chatId: number): Promise<MemoryEntry[]> {
+export async function getUserMemories(chatId: string): Promise<MemoryEntry[]> {
   try {
     const rows = await db
       .select({
@@ -58,7 +58,7 @@ export function formatMemoriesForPrompt(memories: MemoryEntry[]): string {
 }
 
 /** Uses claude-haiku to extract preferences/patterns and upserts them into DB. */
-export async function extractAndSaveMemories(chatId: number, query: string, response: string): Promise<void> {
+export async function extractAndSaveMemories(chatId: string, query: string, response: string): Promise<void> {
   try {
     const result = await extractor.messages.create({
       model: "claude-haiku-4-5-20251001",

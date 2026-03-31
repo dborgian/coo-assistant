@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // Mock dependencies before importing
 vi.mock("../config.js", () => ({
-  config: { TELEGRAM_OWNER_CHAT_ID: 123 },
+  config: { SLACK_NOTIFICATIONS_CHANNEL: "C0TEST123" },
 }));
 
 vi.mock("../models/database.js", () => ({

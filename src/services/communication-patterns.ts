@@ -1,6 +1,5 @@
-import type { Bot } from "grammy";
 import { and, eq, gte, sql } from "drizzle-orm";
-import { config } from "../config.js";
+import { sendOwnerNotification } from "../utils/notify.js";
 import { db } from "../models/database.js";
 import { communicationStats, employees, messageLogs } from "../models/schema.js";
 import { logger } from "../utils/logger.js";
@@ -69,7 +68,7 @@ export async function updateCommunicationStats(): Promise<void> {
   logger.info("Communication stats updated");
 }
 
-export async function detectSilentEmployees(bot: Bot): Promise<void> {
+export async function detectSilentEmployees(): Promise<void> {
   const threeDaysAgo = new Date();
   threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
 
@@ -103,10 +102,7 @@ export async function detectSilentEmployees(bot: Bot): Promise<void> {
   }
 
   if (silent.length) {
-    await bot.api.sendMessage(
-      config.TELEGRAM_OWNER_CHAT_ID,
-      `\uD83D\uDE36 Employee silenziosi (0 messaggi in 3 giorni):\n${silent.map((n) => `- ${n}`).join("\n")}`,
-    );
+    await sendOwnerNotification(`\uD83D\uDE36 Employee silenziosi (0 messaggi in 3 giorni):\n${silent.map((n) => `- ${n}`).join("\n")}`);
   }
 }
 

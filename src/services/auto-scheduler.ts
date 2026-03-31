@@ -1,7 +1,7 @@
 import { google } from "googleapis";
-import type { Bot } from "grammy";
 import { and, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import { config } from "../config.js";
+import { sendOwnerNotification } from "../utils/notify.js";
 import { getGoogleAuth, isGoogleConfigured } from "../core/google-auth.js";
 import { db } from "../models/database.js";
 import { employees, tasks } from "../models/schema.js";
@@ -175,7 +175,7 @@ async function deleteCalendarEvent(eventId: string, calendarId: string = "primar
   }
 }
 
-export async function autoScheduleTasks(bot: Bot): Promise<void> {
+export async function autoScheduleTasks(): Promise<void> {
   if (!isGoogleConfigured()) {
     logger.debug("Auto-scheduling skipped — Google not configured");
     return;
@@ -326,11 +326,7 @@ export async function autoScheduleTasks(bot: Bot): Promise<void> {
     if (scheduled) message += `\uD83D\uDCC5 Auto-scheduling: ${scheduled} task piazzati nel calendario.\n`;
     if (atRisk.length) message += `\u26A0\uFE0F Task a rischio (non c'e' abbastanza tempo):\n${atRisk.join("\n")}`;
 
-    try {
-      await bot.api.sendMessage(config.TELEGRAM_OWNER_CHAT_ID, message);
-    } catch (err) {
-      logger.error({ err }, "Failed to send auto-scheduling notification");
-    }
+    await sendOwnerNotification(message).catch((err) => logger.error({ err }, "Failed to send auto-scheduling notification"));
   }
 }
 

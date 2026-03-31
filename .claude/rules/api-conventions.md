@@ -5,17 +5,16 @@
 - Always check `isGoogleConfigured()` before calling Google APIs
 - Catch errors and return empty arrays/null — never crash
 
-## Telegram Bot (grammY)
-- Commands registered in `src/bot/commands.ts`
-- Callbacks in `src/bot/callbacks.ts`
-- Send AI-generated text WITHOUT parse_mode (avoids HTML/Markdown conflicts)
-- Split messages > 4000 chars into chunks
-- Use `config.TELEGRAM_OWNER_CHAT_ID` for founder notifications
-
-## Slack
-- Socket Mode via @slack/bolt
-- Use `sendSlackMessage(channelId, text)` from `src/bot/slack-monitor.ts`
-- Default channel: `config.SLACK_NOTIFICATIONS_CHANNEL`
+## Slack Bot (@slack/bolt)
+- Socket Mode — no Request URL needed, works with Railway
+- Slash commands registered in `src/bot/slack-commands.ts` via `registerSlashCommands()`
+- Block Kit dashboard in `src/bot/slack-dashboard.ts` via `registerDashboardActions()`
+- OAuth onboarding in `src/bot/onboarding.ts` via `registerOAuthCommands()`
+- All commands registered from `startSlackMonitor()` in `src/bot/slack-monitor.ts`
+- Notifications via `src/utils/notify.ts`: `sendOwnerNotification()`, `notifyAssigneeAndOwner()`, `sendEmployeeNotification()`
+- HTML auto-converted to mrkdwn by `htmlToMrkdwn()` in `notify.ts`
+- DM channel: `sendSlackDM(slackMemberId, text)` — opens conversation + posts
+- Default notification channel: `config.SLACK_NOTIFICATIONS_CHANNEL`
 
 ## AI Agent Tools
 - Define tools in `this.tools` array in `src/core/agent.ts`

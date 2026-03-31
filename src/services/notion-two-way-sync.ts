@@ -1,13 +1,12 @@
-import type { Bot } from "grammy";
 import { and, eq, isNull, isNotNull, sql, inArray, not } from "drizzle-orm";
-import { config } from "../config.js";
+import { sendOwnerNotification } from "../utils/notify.js";
 import { db } from "../models/database.js";
 import { tasks, employees } from "../models/schema.js";
 import { createNotionTask, isNotionConfigured, getNotionTasksViaSearch, updateNotionTaskStatus, updateNotionTaskProperties, archiveNotionPage, extractNotionPageId } from "./notion-sync.js";
 import { completeGoogleTask } from "./google-tasks-sync.js";
 import { logger } from "../utils/logger.js";
 
-export async function syncTasksToNotion(bot: Bot): Promise<void> {
+export async function syncTasksToNotion(): Promise<void> {
   if (!isNotionConfigured()) {
     logger.debug("Notion two-way sync skipped — not configured");
     return;
@@ -131,7 +130,7 @@ export async function syncTasksToNotion(bot: Bot): Promise<void> {
   }
 }
 
-export async function syncNotionToTasks(bot: Bot): Promise<void> {
+export async function syncNotionToTasks(): Promise<void> {
   if (!isNotionConfigured()) return;
 
   try {
@@ -227,10 +226,9 @@ export async function syncNotionToTasks(bot: Bot): Promise<void> {
     if (imported || statusUpdated) {
       logger.info({ imported, statusUpdated }, "Notion to DB sync completed");
       if (imported) {
-        await bot.api.sendMessage(
-          config.TELEGRAM_OWNER_CHAT_ID,
+        await sendOwnerNotification(
           `\uD83D\uDD04 Notion sync: ${imported} nuovi task importati${statusUpdated ? `, ${statusUpdated} status aggiornati` : ""}.`,
-        ).catch((e) => logger.error({ err: e }, "Telegram notification on Notion sync failed"));
+        ).catch((e) => logger.error({ err: e }, "Notification on Notion sync failed"));
       }
     }
   } catch (err) {

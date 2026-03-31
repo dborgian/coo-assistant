@@ -1,6 +1,5 @@
 import { createServer } from "node:http";
 import { disconnectRedis } from "./utils/conversation-cache.js";
-import { createBot } from "./bot/telegram-bot.js";
 import { mcpManager } from "./core/mcp-client.js";
 import { setupSchedules, stopSchedules } from "./core/scheduler.js";
 import { initDb, closeDb } from "./models/database.js";
@@ -31,7 +30,6 @@ import { detectMeetingOverload } from "./services/meeting-intelligence.js";
 import { checkAndSummarizeThreads, generateDailySlackDigest } from "./services/thread-summarizer.js";
 import { sendEodPrompts, collectEodResponses } from "./services/eod-reports.js";
 import { checkRecentMeetings } from "./services/meeting-notes.js";
-import { startUserbot, stopUserbot } from "./bot/monitors.js";
 import { startSlackMonitor, stopSlackMonitor } from "./bot/slack-monitor.js";
 import { handleOAuthCallback } from "./bot/onboarding.js";
 import { logger } from "./utils/logger.js";
@@ -45,55 +43,46 @@ async function main(): Promise<void> {
   // Load MCP config
   mcpManager.loadConfig();
 
-  // Create Telegram bot
-  const bot = createBot();
-
   // Setup scheduled jobs
   setupSchedules({
-    dailyReport: () => generateAndSendDailyReport(bot),
-    chatMonitor: () => checkPendingMessages(bot),
-    calendarCheck: () => checkUpcomingEvents(bot),
-    emailCheck: () => checkImportantEmails(bot),
-    taskReminders: () => checkAndSendReminders(bot),
-    notionSync: () => syncNotionData(bot),
-    escalationCheck: () => runEscalationCheck(bot),
-    autoPrioritization: () => runAutoPrioritization(bot),
-    recurringTasks: () => generateRecurringTasks(bot),
+    dailyReport: () => generateAndSendDailyReport(),
+    chatMonitor: () => checkPendingMessages(),
+    calendarCheck: () => checkUpcomingEvents(),
+    emailCheck: () => checkImportantEmails(),
+    taskReminders: () => checkAndSendReminders(),
+    notionSync: () => syncNotionData(),
+    escalationCheck: () => runEscalationCheck(),
+    autoPrioritization: () => runAutoPrioritization(),
+    recurringTasks: () => generateRecurringTasks(),
     workloadMetrics: () => updateWorkloadMetrics(),
-    staleDetection: () => detectStaleTasks(bot),
-    autoScheduling: () => autoScheduleTasks(bot),
-    smartAgenda: () => generateAndSendAgendas(bot),
-    proactiveCheck: () => runProactiveCheck(bot),
-    weeklyDigest: () => generateWeeklyDigest(bot),
-    meetingActions: () => checkMeetingActionItems(bot),
-    clientUpdates: () => sendWeeklyClientUpdates(bot),
-    notionTwoWaySync: async () => { await syncTasksToNotion(bot).catch((e) => logger.error({ err: e }, "syncTasksToNotion failed")); await syncNotionToTasks(bot).catch((e) => logger.error({ err: e }, "syncNotionToTasks failed")); },
-    sheetsExport: () => exportWeeklyMetrics(bot),
-    intelligenceBatch: async () => { await analyzeSentimentBatch(bot); await extractKnowledgeBatch(); },
+    staleDetection: () => detectStaleTasks(),
+    autoScheduling: () => autoScheduleTasks(),
+    smartAgenda: () => generateAndSendAgendas(),
+    proactiveCheck: () => runProactiveCheck(),
+    weeklyDigest: () => generateWeeklyDigest(),
+    meetingActions: () => checkMeetingActionItems(),
+    clientUpdates: () => sendWeeklyClientUpdates(),
+    notionTwoWaySync: async () => { await syncTasksToNotion().catch((e) => logger.error({ err: e }, "syncTasksToNotion failed")); await syncNotionToTasks().catch((e) => logger.error({ err: e }, "syncNotionToTasks failed")); },
+    sheetsExport: () => exportWeeklyMetrics(),
+    intelligenceBatch: async () => { await analyzeSentimentBatch(); await extractKnowledgeBatch(); },
     communicationStatsJob: () => updateCommunicationStats(),
-    sentimentAlerts: () => checkSentimentAlerts(bot),
-    commitmentCheck: () => checkCommitmentFulfillment(bot),
-    silentEmployeeCheck: () => detectSilentEmployees(bot),
-    meetingOverload: () => detectMeetingOverload(bot),
+    sentimentAlerts: () => checkSentimentAlerts(),
+    commitmentCheck: () => checkCommitmentFulfillment(),
+    silentEmployeeCheck: () => detectSilentEmployees(),
+    meetingOverload: () => detectMeetingOverload(),
     topicExtraction: async () => { await extractDailyTopics(); },
     threadSummarizer: async () => { await checkAndSummarizeThreads(); },
     dailySlackDigest: async () => { await generateDailySlackDigest(); },
     eodPrompts: async () => { await sendEodPrompts(); },
-    eodCollect: async () => { await collectEodResponses(bot); },
+    eodCollect: async () => { await collectEodResponses(); },
     meetingNotes: async () => { await checkRecentMeetings(); },
   });
 
   // Discover and link Notion users to employees
   discoverNotionUsers().catch((err) => logger.warn({ err }, "Notion user discovery failed at startup"));
 
-  // Start Telethon/GramJS userbot for chat monitoring
-  const userbotStarted = await startUserbot(bot);
-  if (userbotStarted) {
-    logger.info("Telegram chat monitoring active");
-  }
-
-  // Start Slack monitor for channel monitoring
-  const slackStarted = await startSlackMonitor(bot);
+  // Start Slack monitor (handles all bot interactions, slash commands, and channel monitoring)
+  const slackStarted = await startSlackMonitor();
   if (slackStarted) {
     logger.info("Slack monitoring active");
   }
@@ -116,15 +105,15 @@ async function main(): Promise<void> {
 
       if (!code || !state) {
         res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
-        res.end(`<html><body style="font-family:sans-serif;text-align:center;padding:60px"><h1>Parametri mancanti</h1><p>Riprova dal bot Telegram.</p></body></html>`);
+        res.end(`<html><body style="font-family:sans-serif;text-align:center;padding:60px"><h1>Parametri mancanti</h1><p>Riprova da Slack.</p></body></html>`);
         return;
       }
 
-      const result = await handleOAuthCallback(code, state, bot);
+      const result = await handleOAuthCallback(code, state);
       const status = result.ok ? 200 : 400;
       const icon = result.ok ? "&#10004;" : "&#10008;";
       res.writeHead(status, { "Content-Type": "text/html; charset=utf-8" });
-      res.end(`<html><body style="font-family:sans-serif;text-align:center;padding:60px"><h1>${icon} ${result.message}</h1><p>Puoi chiudere questa pagina e tornare a Telegram.</p></body></html>`);
+      res.end(`<html><body style="font-family:sans-serif;text-align:center;padding:60px"><h1>${icon} ${result.message}</h1><p>Puoi chiudere questa pagina e tornare a Slack.</p></body></html>`);
       return;
     }
 
@@ -140,8 +129,6 @@ async function main(): Promise<void> {
     logger.info("Shutting down...");
     stopSchedules();
     await stopSlackMonitor();
-    await stopUserbot();
-    await bot.stop();
     await disconnectRedis();
     await closeDb();
     logger.info("COO Assistant stopped.");
@@ -151,9 +138,7 @@ async function main(): Promise<void> {
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
-  // Start the Telegram bot (blocking)
-  logger.info("COO Assistant is online. Telegram bot starting...");
-  await bot.start();
+  logger.info("COO Assistant is online.");
 }
 
 main().catch((err) => {

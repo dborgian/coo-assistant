@@ -1,13 +1,12 @@
-import type { Bot } from "grammy";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { agent } from "../core/agent.js";
-import { config } from "../config.js";
+import { sendOwnerNotification } from "../utils/notify.js";
 import { db } from "../models/database.js";
 import { clients, tasks } from "../models/schema.js";
 import { sendEmail } from "./email-manager.js";
 import { logger } from "../utils/logger.js";
 
-export async function sendWeeklyClientUpdates(bot: Bot): Promise<void> {
+export async function sendWeeklyClientUpdates(): Promise<void> {
   const activeClients = await db
     .select()
     .from(clients)
@@ -78,13 +77,8 @@ Firma come "Il team operativo".`,
   }
 
   if (sentCount) {
-    try {
-      await bot.api.sendMessage(
-        config.TELEGRAM_OWNER_CHAT_ID,
-        `\uD83D\uDCE7 Aggiornamenti settimanali inviati a ${sentCount} client.`,
-      );
-    } catch (err) {
-      logger.error({ err }, "Failed to notify about client updates");
-    }
+    await sendOwnerNotification(`\uD83D\uDCE7 Aggiornamenti settimanali inviati a ${sentCount} client.`).catch((err) =>
+      logger.error({ err }, "Failed to notify about client updates"),
+    );
   }
 }

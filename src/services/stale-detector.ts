@@ -1,13 +1,11 @@
-import type { Bot } from "grammy";
 import { and, eq, lte } from "drizzle-orm";
 import { agent } from "../core/agent.js";
-import { config } from "../config.js";
 import { db } from "../models/database.js";
 import { employees, tasks } from "../models/schema.js";
 import { logger } from "../utils/logger.js";
-import { sendEmployeeMessage } from "../utils/telegram.js";
+import { sendEmployeeNotification, sendOwnerNotification } from "../utils/notify.js";
 
-export async function detectStaleTasks(bot: Bot): Promise<void> {
+export async function detectStaleTasks(): Promise<void> {
   const threeDaysAgo = new Date();
   threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
 
@@ -72,12 +70,12 @@ export async function detectStaleTasks(bot: Bot): Promise<void> {
   for (const assigneeId of assigneeIds) {
     const assigneeTasks = staleTasks.filter((t) => t.assignedTo === assigneeId);
     const assigneeMsg = `Hai ${assigneeTasks.length} task fermi senza aggiornamenti:\n${assigneeTasks.map((t) => `- "${t.title}"`).join("\n")}`;
-    await sendEmployeeMessage(bot, assigneeId!, assigneeMsg);
+    await sendEmployeeNotification(assigneeId!, assigneeMsg);
   }
 
   // Full summary to owner
   try {
-    await bot.api.sendMessage(config.TELEGRAM_OWNER_CHAT_ID, message);
+    await sendOwnerNotification(message);
     logger.info({ count: staleTasks.length }, "Stale tasks detected and notified");
   } catch (err) {
     logger.error({ err }, "Failed to send stale tasks notification");

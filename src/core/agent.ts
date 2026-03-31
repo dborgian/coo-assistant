@@ -30,7 +30,7 @@ import { getMeetingStats } from "../services/meeting-intelligence.js";
 import { createGoogleDoc } from "../services/google-docs-manager.js";
 import { unifiedSearch } from "../services/unified-search.js";
 import type { Tool, ToolResultBlockParam } from "@anthropic-ai/sdk/resources/messages.js";
-import type { AccessRole } from "../bot/auth.js";
+import type { AccessRole } from "../bot/auth-types.js";
 import { getAllowedToolNames } from "../bot/permissions.js";
 import { getConversationHistory, addToConversation } from "../utils/conversation-cache.js";
 import { getUserMemories, formatMemoriesForPrompt, extractAndSaveMemories } from "../services/user-memory.js";
@@ -1753,7 +1753,7 @@ Genera 5-10 task concreti e actionable.`,
     userRole: AccessRole = "owner",
     employeeId: string | null = null,
     userName?: string,
-    chatId?: number,
+    chatId?: string,
   ): Promise<AgentResponse> {
     this.collectedFiles = [];
 

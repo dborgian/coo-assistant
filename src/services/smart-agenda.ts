@@ -1,14 +1,13 @@
-import type { Bot } from "grammy";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { agent } from "../core/agent.js";
-import { config } from "../config.js";
 import { db } from "../models/database.js";
 import { employees, tasks } from "../models/schema.js";
 import { getTodayEvents } from "./calendar-sync.js";
 import { sendEmail } from "./email-manager.js";
+import { sendEmployeeNotification, sendOwnerNotification } from "../utils/notify.js";
 import { logger } from "../utils/logger.js";
 
-export async function generateAndSendAgendas(bot: Bot): Promise<void> {
+export async function generateAndSendAgendas(): Promise<void> {
   const today = new Date().toISOString().split("T")[0];
   const now = new Date();
 
@@ -90,14 +89,10 @@ NON usare emoji. Tieni tutto sotto 500 caratteri.`,
       // Send via best available channel
       let sent = false;
 
-      // Try Telegram DM first
-      if (emp.telegramUserId && !sent) {
-        try {
-          await bot.api.sendMessage(emp.telegramUserId, agendaContent);
-          sent = true;
-        } catch {
-          logger.debug({ employee: emp.name }, "Telegram DM failed for agenda");
-        }
+      // Try Slack DM first
+      if (emp.id && !sent) {
+        const ok = await sendEmployeeNotification(emp.id, agendaContent);
+        if (ok) sent = true;
       }
 
       // Try email
@@ -130,8 +125,7 @@ NON usare emoji. Tieni tutto sotto 500 caratteri.`,
 
     const overdue = totalTasks.filter((t) => t.dueDate && new Date(t.dueDate) < now);
 
-    await bot.api.sendMessage(
-      config.TELEGRAM_OWNER_CHAT_ID,
+    await sendOwnerNotification(
       `\uD83C\uDF05 Agende inviate a ${activeEmployees.length} employee.\n` +
       `Task attivi: ${totalTasks.length} | Overdue: ${overdue.length}`,
     );

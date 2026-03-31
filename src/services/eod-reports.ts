@@ -1,10 +1,9 @@
-import type { Bot } from "grammy";
 import { and, eq, gte, inArray, sql } from "drizzle-orm";
 import { agent } from "../core/agent.js";
-import { config } from "../config.js";
 import { db } from "../models/database.js";
 import { employees, messageLogs, tasks } from "../models/schema.js";
 import { sendSlackMessage, getNotificationsChannel } from "../bot/slack-monitor.js";
+import { sendOwnerNotification } from "../utils/notify.js";
 import { logger } from "../utils/logger.js";
 
 /**
@@ -72,7 +71,7 @@ export async function sendEodPrompts(): Promise<void> {
  * Collect EOD responses and generate unified team report.
  * Scheduled at 18:30 (1 hour after prompts).
  */
-export async function collectEodResponses(bot: Bot): Promise<void> {
+export async function collectEodResponses(): Promise<void> {
   const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
 
   const activeEmployees = await db
@@ -129,12 +128,12 @@ Scrivi in italiano, max 800 caratteri. Sii conciso e diretto.`,
 
   const msg = `EOD Report — ${new Date().toLocaleDateString("it-IT")}\n\n${report}\n\n(${responses.length}/${activeEmployees.length} risposte ricevute)`;
 
-  // Post to Slack + Telegram
+  // Post to Slack notifications channel + DM owner
   try {
     const _notifCh = getNotificationsChannel(); if (_notifCh) {
       await sendSlackMessage(_notifCh, msg);
     }
-    await bot.api.sendMessage(config.TELEGRAM_OWNER_CHAT_ID, msg);
+    await sendOwnerNotification(msg);
     logger.info({ responses: responses.length }, "EOD report generated and sent");
   } catch (err) {
     logger.error({ err }, "Failed to send EOD report");

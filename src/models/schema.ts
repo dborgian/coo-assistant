@@ -193,7 +193,7 @@ export const dailyReports = pgTable("daily_reports", {
   reportDate: date("report_date").notNull(),
   reportType: text("report_type").default("daily"), // daily, weekly, on_demand
   content: text("content").notNull(),
-  sentVia: text("sent_via").default("telegram"),
+  sentVia: text("sent_via").default("slack"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
 }, (t) => [
   index("idx_reports_date").on(t.reportDate),
@@ -201,7 +201,7 @@ export const dailyReports = pgTable("daily_reports", {
 
 export const userMemory = pgTable("user_memory", {
   id: uuid("id").primaryKey().defaultRandom(),
-  chatId: bigint("chat_id", { mode: "number" }).notNull(),
+  chatId: text("chat_id").notNull(),
   category: text("category").notNull(), // "preference" | "pattern" | "context"
   key: text("key").notNull(),           // es. "report_format", "preferred_assignee"
   value: text("value").notNull(),       // es. "word", "Damiano"

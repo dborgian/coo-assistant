@@ -1,4 +1,3 @@
-import type { Bot } from "grammy";
 import { and, eq, inArray, isNotNull, or, lte, isNull, sql } from "drizzle-orm";
 import { agent } from "../core/agent.js";
 import { config } from "../config.js";
@@ -7,7 +6,7 @@ import { employees, tasks } from "../models/schema.js";
 import { sendEmail } from "./email-manager.js";
 import { sendSlackMessage, sendSlackTaskNotification, getNotificationsChannel } from "../bot/slack-monitor.js";
 import { logger } from "../utils/logger.js";
-import { notifyAssigneeAndOwner } from "../utils/telegram.js";
+import { notifyAssigneeAndOwner } from "../utils/notify.js";
 
 interface EscalationAction {
   taskId: string;
@@ -33,7 +32,7 @@ function calculateEscalationLevel(dueDate: Date): number {
   return -1; // No escalation needed
 }
 
-export async function runEscalationCheck(bot: Bot): Promise<void> {
+export async function runEscalationCheck(): Promise<void> {
   const now = new Date();
 
   const activeTasks = await db
@@ -105,7 +104,7 @@ export async function runEscalationCheck(bot: Bot): Promise<void> {
   // Execute escalation actions
   for (const action of actions) {
     try {
-      await executeEscalation(bot, action);
+      await executeEscalation(action);
     } catch (err) {
       logger.error({ err, task: action.taskTitle, level: action.newLevel }, "Escalation action failed");
     }
@@ -116,15 +115,15 @@ export async function runEscalationCheck(bot: Bot): Promise<void> {
   }
 }
 
-async function executeEscalation(bot: Bot, action: EscalationAction): Promise<void> {
+async function executeEscalation(action: EscalationAction): Promise<void> {
   const { taskTitle, newLevel, assignedTo, assigneeName, assigneeEmail, assigneeSlackId } = action;
   const assignee = assigneeName ?? "non assegnato";
 
   switch (newLevel) {
     case 0: {
-      // L0: Soft reminder — Telegram to assignee + owner
+      // L0: Soft reminder
       await notifyAssigneeAndOwner(
-        bot, assignedTo ?? null,
+        assignedTo ?? null,
         `\u23F0 Task "${taskTitle}" scade tra meno di 48 ore (${assignee})`,
       );
       break;
@@ -142,7 +141,7 @@ async function executeEscalation(bot: Bot, action: EscalationAction): Promise<vo
         await sendSlackTaskNotification(assigneeSlackId, `\u23F0 Reminder: il task "${taskTitle}" scade domani. Aggiorna lo stato per favore.`, action.taskId);
       }
       await notifyAssigneeAndOwner(
-        bot, assignedTo ?? null,
+        assignedTo ?? null,
         `\u23F0 L1: Task "${taskTitle}" scade tra 24h — notificato ${assignee} via ${assigneeEmail ? "email" : ""}${assigneeEmail && assigneeSlackId ? " + " : ""}${assigneeSlackId ? "Slack" : ""}`,
       );
       break;
@@ -150,7 +149,7 @@ async function executeEscalation(bot: Bot, action: EscalationAction): Promise<vo
     case 2: {
       // L2: Overdue alert — Telegram + Email
       await notifyAssigneeAndOwner(
-        bot, assignedTo ?? null,
+        assignedTo ?? null,
         `\uD83D\uDD34 OVERDUE: Task "${taskTitle}" ha superato la scadenza! (${assignee})`,
       );
       if (assigneeEmail) {
@@ -165,7 +164,7 @@ async function executeEscalation(bot: Bot, action: EscalationAction): Promise<vo
     case 3: {
       // L3: Stale warning — Telegram + Slack #general
       await notifyAssigneeAndOwner(
-        bot, assignedTo ?? null,
+        assignedTo ?? null,
         `\u26A0\uFE0F Task "${taskTitle}" fermo da 3+ giorni dopo la scadenza (${assignee}). Serve intervento.`,
       );
       const _notifCh = getNotificationsChannel(); if (_notifCh) {
@@ -188,7 +187,7 @@ async function executeEscalation(bot: Bot, action: EscalationAction): Promise<vo
       }
 
       await notifyAssigneeAndOwner(
-        bot, assignedTo ?? null,
+        assignedTo ?? null,
         `\uD83D\uDEA8 ESCALATION CRITICA: Task "${taskTitle}" (${assignee}) — overdue da 7+ giorni\n\n\uD83E\uDD16 Raccomandazione: ${recommendation}`,
       );
       break;

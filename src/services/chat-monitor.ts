@@ -1,11 +1,10 @@
-import type { Bot } from "grammy";
 import { and, eq, lt } from "drizzle-orm";
-import { config } from "../config.js";
+import { sendOwnerNotification } from "../utils/notify.js";
 import { db } from "../models/database.js";
 import { messageLogs } from "../models/schema.js";
 import { logger } from "../utils/logger.js";
 
-export async function checkPendingMessages(bot: Bot): Promise<void> {
+export async function checkPendingMessages(): Promise<void> {
   const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
 
   const staleMessages = await db
@@ -30,9 +29,7 @@ export async function checkPendingMessages(bot: Bot): Promise<void> {
   }
 
   try {
-    await bot.api.sendMessage(config.TELEGRAM_OWNER_CHAT_ID, reminderText, {
-      parse_mode: "HTML",
-    });
+    await sendOwnerNotification(reminderText);
     logger.info({ count: staleMessages.length }, "Sent pending reply reminder");
   } catch (err) {
     logger.error({ err }, "Failed to send reminder");

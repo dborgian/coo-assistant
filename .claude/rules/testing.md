@@ -13,5 +13,6 @@ No test framework configured yet. Tests are TODO.
 ## Manual Testing
 - `npx tsc --noEmit` — must pass before any deploy
 - Start bot: `npx tsx src/index.ts`
-- Test commands via Telegram
+- Test slash commands in Slack: `/coo-dashboard`, `/coo-status`, `/coo-tasks`
+- Test DM: message the bot directly in Slack
 - Check Pino logs for errors

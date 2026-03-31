@@ -1,7 +1,7 @@
 import { google } from "googleapis";
 import { eq } from "drizzle-orm";
-import type { Bot } from "grammy";
 import { config } from "../config.js";
+import { sendOwnerNotification } from "../utils/notify.js";
 import { getGoogleAuth, isGoogleConfigured } from "../core/google-auth.js";
 import type { GoogleAuth } from "../core/google-auth.js";
 import { logger } from "../utils/logger.js";
@@ -118,7 +118,7 @@ function getUpcomingSoon(events: CalendarEvent[], withinMinutes = 15): CalendarE
   });
 }
 
-export async function checkUpcomingEvents(bot: Bot): Promise<void> {
+export async function checkUpcomingEvents(): Promise<void> {
   if (!isGoogleConfigured()) {
     logger.debug("Calendar check skipped — Google not configured");
     return;
@@ -133,13 +133,13 @@ export async function checkUpcomingEvents(bot: Bot): Promise<void> {
     const time = new Date(ev.start).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" });
     let msg = `\u23F0 <b>Meeting tra 15 min</b>\n${ev.summary} alle ${time}`;
     if (ev.location) msg += `\n\uD83D\uDCCD ${ev.location}`;
-    await bot.api.sendMessage(config.TELEGRAM_OWNER_CHAT_ID, msg, { parse_mode: "HTML" });
+    await sendOwnerNotification(msg);
   }
 
   // Notify about conflicts
   const conflicts = detectConflicts(events);
   for (const [a, b] of conflicts) {
     const msg = `\u26A0\uFE0F <b>Conflitto calendario</b>\n"${a.summary}" e "${b.summary}" si sovrappongono!`;
-    await bot.api.sendMessage(config.TELEGRAM_OWNER_CHAT_ID, msg, { parse_mode: "HTML" });
+    await sendOwnerNotification(msg);
   }
 }

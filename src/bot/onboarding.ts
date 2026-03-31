@@ -1,4 +1,4 @@
-import type { Bot, Context } from "grammy";
+import type { App } from "@slack/bolt";
 import { eq } from "drizzle-orm";
 import { google } from "googleapis";
 import { config } from "../config.js";
@@ -7,7 +7,8 @@ import { employees } from "../models/schema.js";
 import { logger } from "../utils/logger.js";
 import { getAuthUrl, exchangeCode } from "../core/google-auth.js";
 import { isGoogleConfigured } from "../core/google-auth.js";
-import { clearAuthCache } from "./auth.js";
+import { sendSlackDM } from "../utils/notify.js";
+import { clearSlackAuthCache } from "./slack-monitor.js";
 
 /** Fetch the user's Google Calendar timezone setting */
 async function getCalendarTimezone(auth: InstanceType<typeof google.auth.OAuth2>): Promise<string | null> {
@@ -20,279 +21,116 @@ async function getCalendarTimezone(auth: InstanceType<typeof google.auth.OAuth2>
   }
 }
 
-// Track users awaiting OAuth code paste
-const pendingOAuth = new Map<number, { createdAt: number }>();
+// Track Slack users awaiting OAuth redirect
+const pendingOAuth = new Map<string, { createdAt: number }>();
 const PENDING_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
-export function isAwaitingOAuth(telegramId: number): boolean {
-  const entry = pendingOAuth.get(telegramId);
+export function isAwaitingOAuth(slackUserId: string): boolean {
+  const entry = pendingOAuth.get(slackUserId);
   if (!entry) return false;
   if (Date.now() - entry.createdAt > PENDING_TTL_MS) {
-    pendingOAuth.delete(telegramId);
+    pendingOAuth.delete(slackUserId);
     return false;
   }
   return true;
 }
 
-export async function handleFirstStart(ctx: Context): Promise<boolean> {
-  const telegramId = ctx.from?.id;
-  if (!telegramId) return false;
+/**
+ * Register /coo-connect-google and /coo-disconnect-google slash commands.
+ * Called from slack-monitor.ts after slackApp is created.
+ */
+export function registerOAuthCommands(slackApp: App): void {
+  slackApp.command("/coo-connect-google", async ({ command, ack, respond }) => {
+    await ack();
+    const slackUserId = command.user_id;
 
-  // Check if user already exists in DB
-  const [existing] = await db
-    .select()
-    .from(employees)
-    .where(eq(employees.telegramUserId, telegramId))
-    .limit(1);
-
-  if (existing) return false; // Not a first-time user
-
-  if (!isGoogleConfigured()) {
-    // No Google OAuth configured — create employee without Google auth
-    await createEmployee(ctx);
-    await ctx.reply(
-      "Registrazione completata! Google OAuth non e' configurato, quindi l'autenticazione Google e' stata saltata.\n\n" +
-        "Usa /help per vedere i comandi disponibili.",
-    );
-    return true;
-  }
-
-  // Send OAuth link with state param for automatic callback
-  const authUrl = getAuthUrl(String(telegramId));
-
-  await ctx.reply(
-    "Benvenuto! Per usare questo bot devi autenticarti con il tuo account Google.\n\n" +
-      "1. Clicca il link qui sotto\n" +
-      "2. Autorizza l'accesso con il tuo account Google\n" +
-      "3. Verrai reindirizzato automaticamente e la registrazione sara' completata\n\n" +
-      "Se qualcosa non funziona, puoi anche incollare qui il codice dall'URL di redirect.",
-  );
-  await ctx.reply(authUrl);
-
-  pendingOAuth.set(telegramId, { createdAt: Date.now() });
-  logger.info({ telegramId, username: ctx.from?.username }, "First-time user started OAuth flow");
-
-  return true;
-}
-
-export async function handleOAuthCode(ctx: Context): Promise<boolean> {
-  const telegramId = ctx.from?.id;
-  if (!telegramId || !isAwaitingOAuth(telegramId)) return false;
-
-  const text = ctx.message && "text" in ctx.message ? ctx.message.text?.trim() : "";
-  if (!text) return false;
-
-  // Clean up the code — user might paste full URL or just the code
-  let code = text;
-  if (code.includes("code=")) {
-    const match = code.match(/code=([^&\s]+)/);
-    if (match) code = match[1];
-  }
-
-  // URL-decode the code (browser might encode it)
-  try {
-    code = decodeURIComponent(code);
-  } catch {
-    // ignore decode errors
-  }
-
-  await ctx.reply("Verifico il codice...");
-
-  try {
-    const tokens = await exchangeCode(code);
-
-    if (!tokens.refresh_token) {
-      await ctx.reply(
-        "Non ho ricevuto un refresh token. Prova a revocare l'accesso su https://myaccount.google.com/permissions e rifai /start.",
-      );
-      pendingOAuth.delete(telegramId);
-      return true;
+    if (!isGoogleConfigured()) {
+      await respond("Google OAuth non e' configurato sul server.");
+      return;
     }
 
-    // Get user profile from Google
-    const oauth2Client = new google.auth.OAuth2(
-      config.GOOGLE_CLIENT_ID,
-      config.GOOGLE_CLIENT_SECRET,
-      config.GOOGLE_REDIRECT_URI,
+    const authUrl = getAuthUrl(slackUserId);
+    pendingOAuth.set(slackUserId, { createdAt: Date.now() });
+
+    await respond(
+      "Connetti il tuo account Google:\n\n" +
+        "1. Clicca il link qui sotto\n" +
+        "2. Autorizza l'accesso\n" +
+        "3. Verrai reindirizzato automaticamente e l'account sara' connesso\n\n" +
+        authUrl,
     );
-    oauth2Client.setCredentials(tokens);
 
-    const oauth2 = google.oauth2({ version: "v2", auth: oauth2Client });
-    const { data: profile } = await oauth2.userinfo.get();
-    const timezone = await getCalendarTimezone(oauth2Client);
+    logger.info({ slackUserId }, "User started Google OAuth flow");
+  });
 
-    const name = profile.name || ctx.from?.first_name || "Utente";
-    const email = profile.email ?? undefined;
-    const username = ctx.from?.username ?? null;
+  slackApp.command("/coo-disconnect-google", async ({ command, ack, respond }) => {
+    await ack();
+    const slackUserId = command.user_id;
 
-    // Check if an employee with this email already exists (pre-registered by admin)
-    let matched = false;
-    if (email) {
-      const [existing] = await db
-        .select()
-        .from(employees)
-        .where(eq(employees.email, email))
-        .limit(1);
+    const [emp] = await db
+      .select({ id: employees.id, googleRefreshToken: employees.googleRefreshToken })
+      .from(employees)
+      .where(eq(employees.slackMemberId, slackUserId))
+      .limit(1);
 
-      if (existing) {
-        // Link existing employee to this Telegram user
-        await db
-          .update(employees)
-          .set({
-            telegramUserId: telegramId,
-            telegramUsername: username,
-            googleRefreshToken: tokens.refresh_token,
-            googleEmail: email ?? null,
-            timezone,
-            updatedAt: new Date(),
-          })
-          .where(eq(employees.id, existing.id));
-        matched = true;
-
-        logger.info(
-          { telegramId, email, employeeId: existing.id, timezone },
-          "Linked existing employee to Telegram user via email match",
-        );
-      }
+    if (!emp) {
+      await respond("Non sei registrato nel sistema.");
+      return;
     }
 
-    if (!matched) {
-      await createEmployee(ctx, {
-        name,
-        email,
-        googleRefreshToken: tokens.refresh_token,
-        timezone,
+    if (!emp.googleRefreshToken) {
+      await respond("Nessun account Google collegato.");
+      return;
+    }
+
+    // Best-effort revocation
+    try {
+      await fetch(`https://oauth2.googleapis.com/revoke?token=${emp.googleRefreshToken}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
       });
+    } catch {
+      // ignore
     }
 
-    pendingOAuth.delete(telegramId);
-    clearAuthCache();
-
-    await ctx.reply(
-      `Autenticazione completata!\n\n` +
-        `Nome: ${name}\n` +
-        (email ? `Email: ${email}\n` : "") +
-        (matched ? `(Account collegato al tuo profilo esistente)\n` : "") +
-        `\nUsa /help per vedere i comandi disponibili.`,
-    );
-
-    logger.info({ telegramId, email, name, matched }, "First-time user completed OAuth onboarding");
-    return true;
-  } catch (err) {
-    logger.error({ err, telegramId }, "OAuth code exchange failed");
-    await ctx.reply(
-      "Codice non valido o scaduto. Riprova con /start per generare un nuovo link.",
-    );
-    pendingOAuth.delete(telegramId);
-    return true;
-  }
-}
-
-export async function handleConnectGoogle(ctx: Context): Promise<void> {
-  const telegramId = ctx.from?.id;
-  if (!telegramId) return;
-
-  if (!isGoogleConfigured()) {
-    await ctx.reply("Google OAuth non e' configurato sul server.");
-    return;
-  }
-
-  const authUrl = getAuthUrl(String(telegramId));
-
-  await ctx.reply(
-    "Connetti il tuo account Google:\n\n" +
-      "1. Clicca il link qui sotto\n" +
-      "2. Autorizza l'accesso\n" +
-      "3. Verrai reindirizzato automaticamente e l'account sara' connesso\n\n" +
-      "Se qualcosa non funziona, puoi anche incollare qui il codice dall'URL di redirect.",
-  );
-  await ctx.reply(authUrl);
-
-  pendingOAuth.set(telegramId, { createdAt: Date.now() });
-}
-
-export async function handleConnectGoogleCode(ctx: Context): Promise<boolean> {
-  const telegramId = ctx.from?.id;
-  if (!telegramId || !isAwaitingOAuth(telegramId)) return false;
-
-  const text = ctx.message && "text" in ctx.message ? ctx.message.text?.trim() : "";
-  if (!text) return false;
-
-  let code = text;
-  if (code.includes("code=")) {
-    const match = code.match(/code=([^&\s]+)/);
-    if (match) code = match[1];
-  }
-  try {
-    code = decodeURIComponent(code);
-  } catch {
-    // ignore
-  }
-
-  await ctx.reply("Verifico il codice...");
-
-  try {
-    const tokens = await exchangeCode(code);
-
-    if (!tokens.refresh_token) {
-      await ctx.reply(
-        "Non ho ricevuto un refresh token. Prova a revocare l'accesso su https://myaccount.google.com/permissions e rifai /connect_google.",
-      );
-      pendingOAuth.delete(telegramId);
-      return true;
-    }
-
-    // Fetch timezone from Google Calendar
-    const reconnectAuth = new google.auth.OAuth2(config.GOOGLE_CLIENT_ID, config.GOOGLE_CLIENT_SECRET, config.GOOGLE_REDIRECT_URI);
-    reconnectAuth.setCredentials(tokens);
-    const timezone = await getCalendarTimezone(reconnectAuth);
-
-    // Update existing employee record
     await db
       .update(employees)
-      .set({ googleRefreshToken: tokens.refresh_token, timezone, updatedAt: new Date() })
-      .where(eq(employees.telegramUserId, telegramId));
+      .set({ googleRefreshToken: null, updatedAt: new Date() })
+      .where(eq(employees.id, emp.id));
 
-    pendingOAuth.delete(telegramId);
-    clearAuthCache();
+    clearSlackAuthCache(slackUserId);
 
-    await ctx.reply("Account Google connesso con successo!");
-    logger.info({ telegramId }, "User reconnected Google account");
-    return true;
-  } catch (err) {
-    logger.error({ err, telegramId }, "OAuth reconnect code exchange failed");
-    await ctx.reply(
-      "Codice non valido o scaduto. Riprova con /connect_google.",
-    );
-    pendingOAuth.delete(telegramId);
-    return true;
-  }
+    await respond("Account Google disconnesso. Usa /coo-connect-google per ricollegarlo.");
+    logger.info({ slackUserId }, "User disconnected Google account");
+  });
 }
 
 /**
  * Handle the OAuth callback from Google (called by the HTTP server).
- * Exchanges the code, creates/links the employee, and notifies via Telegram.
+ * state = Slack user ID (set as OAuth state parameter).
  */
 export async function handleOAuthCallback(
   code: string,
   state: string,
-  bot: Bot,
 ): Promise<{ ok: boolean; message: string }> {
-  const telegramId = Number(state);
-  if (!telegramId || Number.isNaN(telegramId)) {
+  const slackUserId = state;
+  if (!slackUserId) {
     return { ok: false, message: "Stato non valido." };
   }
 
-  if (!isAwaitingOAuth(telegramId)) {
-    return { ok: false, message: "Nessuna richiesta OAuth in corso per questo utente. Usa /start nel bot." };
+  if (!isAwaitingOAuth(slackUserId)) {
+    return { ok: false, message: "Nessuna richiesta OAuth in corso per questo utente. Usa /coo-connect-google." };
   }
 
   try {
     const tokens = await exchangeCode(code);
 
     if (!tokens.refresh_token) {
-      pendingOAuth.delete(telegramId);
-      return { ok: false, message: "Nessun refresh token ricevuto. Revoca l'accesso su myaccount.google.com/permissions e riprova." };
+      pendingOAuth.delete(slackUserId);
+      return {
+        ok: false,
+        message: "Nessun refresh token ricevuto. Revoca l'accesso su myaccount.google.com/permissions e riprova.",
+      };
     }
 
     // Get user profile from Google
@@ -309,8 +147,9 @@ export async function handleOAuthCallback(
     const name = profile.name || "Utente";
     const email = profile.email ?? undefined;
 
-    // Check if employee with this email already exists
     let matched = false;
+
+    // 1. Try matching by email (pre-registered employee)
     if (email) {
       const [existing] = await db
         .select()
@@ -322,7 +161,7 @@ export async function handleOAuthCallback(
         await db
           .update(employees)
           .set({
-            telegramUserId: telegramId,
+            slackMemberId: slackUserId,
             googleRefreshToken: tokens.refresh_token,
             googleEmail: email ?? null,
             timezone,
@@ -330,119 +169,57 @@ export async function handleOAuthCallback(
           })
           .where(eq(employees.id, existing.id));
         matched = true;
-        logger.info({ telegramId, email, employeeId: existing.id, timezone }, "OAuth callback: linked existing employee");
+        logger.info({ slackUserId, email, employeeId: existing.id, timezone }, "OAuth callback: linked existing employee");
       }
     }
 
     if (!matched) {
-      // Check if employee already exists by telegramId (reconnect case)
-      const [existingByTg] = await db
+      // 2. Try matching by slackMemberId (reconnect case)
+      const [existingBySlack] = await db
         .select()
         .from(employees)
-        .where(eq(employees.telegramUserId, telegramId))
+        .where(eq(employees.slackMemberId, slackUserId))
         .limit(1);
 
-      if (existingByTg) {
+      if (existingBySlack) {
         await db
           .update(employees)
           .set({ googleRefreshToken: tokens.refresh_token, timezone, updatedAt: new Date() })
-          .where(eq(employees.id, existingByTg.id));
+          .where(eq(employees.id, existingBySlack.id));
         matched = true;
-        logger.info({ telegramId, timezone }, "OAuth callback: reconnected Google for existing employee");
+        logger.info({ slackUserId, timezone }, "OAuth callback: reconnected Google for existing employee");
       } else {
+        // 3. Create new employee
         await db.insert(employees).values({
           name,
           email: email ?? null,
           googleEmail: email ?? null,
-          telegramUserId: telegramId,
+          slackMemberId: slackUserId,
           accessRole: "viewer",
           googleRefreshToken: tokens.refresh_token,
           timezone,
           isActive: true,
         });
-        logger.info({ telegramId, email, name, timezone }, "OAuth callback: created new employee");
+        logger.info({ slackUserId, email, name, timezone }, "OAuth callback: created new employee");
       }
     }
 
-    pendingOAuth.delete(telegramId);
-    clearAuthCache();
+    pendingOAuth.delete(slackUserId);
+    clearSlackAuthCache(slackUserId);
 
-    // Notify user via Telegram
+    // Notify user via Slack DM
     const msg = matched
-      ? `Autenticazione completata!\n\nNome: ${name}\n${email ? `Email: ${email}\n` : ""}Account Google connesso.\n\nUsa /help per vedere i comandi disponibili.`
-      : `Registrazione completata!\n\nNome: ${name}\n${email ? `Email: ${email}\n` : ""}\nUsa /help per vedere i comandi disponibili.`;
+      ? `Autenticazione completata!\n\nNome: ${name}\n${email ? `Email: ${email}\n` : ""}Account Google connesso.\n\nUsa /coo-help per vedere i comandi disponibili.`
+      : `Registrazione completata!\n\nNome: ${name}\n${email ? `Email: ${email}\n` : ""}\nUsa /coo-help per vedere i comandi disponibili.`;
 
-    try {
-      await bot.api.sendMessage(telegramId, msg);
-    } catch (err) {
-      logger.error({ err, telegramId }, "Failed to send OAuth success message via Telegram");
-    }
-
-    return { ok: true, message: "Autenticazione completata! Puoi tornare a Telegram." };
-  } catch (err) {
-    logger.error({ err, telegramId }, "OAuth callback failed");
-    pendingOAuth.delete(telegramId);
-    return { ok: false, message: "Codice non valido o scaduto. Torna su Telegram e riprova con /start." };
-  }
-}
-
-export async function handleDisconnectGoogle(ctx: Context): Promise<void> {
-  const telegramId = ctx.from?.id;
-  if (!telegramId) return;
-
-  const [emp] = await db
-    .select({ id: employees.id, googleRefreshToken: employees.googleRefreshToken })
-    .from(employees)
-    .where(eq(employees.telegramUserId, telegramId))
-    .limit(1);
-
-  if (!emp) {
-    await ctx.reply("Non sei registrato nel sistema.");
-    return;
-  }
-
-  if (!emp.googleRefreshToken) {
-    await ctx.reply("Nessun account Google collegato.");
-    return;
-  }
-
-  // Revoke token with Google
-  try {
-    await fetch(`https://oauth2.googleapis.com/revoke?token=${emp.googleRefreshToken}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    await sendSlackDM(slackUserId, msg).catch((err) => {
+      logger.error({ err, slackUserId }, "Failed to send OAuth success message via Slack DM");
     });
-  } catch {
-    // Best-effort revocation — continue even if it fails
+
+    return { ok: true, message: "Autenticazione completata! Puoi tornare a Slack." };
+  } catch (err) {
+    logger.error({ err, slackUserId }, "OAuth callback failed");
+    pendingOAuth.delete(slackUserId);
+    return { ok: false, message: "Codice non valido o scaduto. Torna su Slack e riprova con /coo-connect-google." };
   }
-
-  await db
-    .update(employees)
-    .set({ googleRefreshToken: null, updatedAt: new Date() })
-    .where(eq(employees.id, emp.id));
-
-  clearAuthCache();
-
-  await ctx.reply("Account Google disconnesso. Usa /connect_google per ricollegarlo.");
-  logger.info({ telegramId }, "User disconnected Google account");
-}
-
-async function createEmployee(
-  ctx: Context,
-  extra?: { name?: string; email?: string; googleRefreshToken?: string; timezone?: string | null },
-): Promise<void> {
-  const telegramId = ctx.from!.id;
-  const username = ctx.from?.username ?? null;
-
-  await db.insert(employees).values({
-    name: extra?.name || ctx.from?.first_name || "Utente",
-    email: extra?.email ?? null,
-    googleEmail: extra?.email ?? null,
-    telegramUserId: telegramId,
-    telegramUsername: username,
-    accessRole: "viewer",
-    googleRefreshToken: extra?.googleRefreshToken ?? null,
-    timezone: extra?.timezone ?? null,
-    isActive: true,
-  });
 }

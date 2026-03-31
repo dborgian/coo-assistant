@@ -1,11 +1,10 @@
-import type { Bot } from "grammy";
 import { and, eq, sql } from "drizzle-orm";
-import { config } from "../config.js";
 import { db } from "../models/database.js";
 import { tasks } from "../models/schema.js";
 import { logger } from "../utils/logger.js";
+import { sendOwnerNotification } from "../utils/notify.js";
 
-export async function generateRecurringTasks(bot: Bot): Promise<void> {
+export async function generateRecurringTasks(): Promise<void> {
   const now = new Date();
   const today = now.toISOString().split("T")[0];
   const dayOfWeek = now.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
@@ -79,13 +78,8 @@ export async function generateRecurringTasks(bot: Bot): Promise<void> {
   }
 
   if (generated) {
-    try {
-      await bot.api.sendMessage(
-        config.TELEGRAM_OWNER_CHAT_ID,
-        `\uD83D\uDD04 Generati ${generated} task ricorrenti per oggi.`,
-      );
-    } catch (err) {
-      logger.error({ err }, "Failed to send recurring tasks notification");
-    }
+    await sendOwnerNotification(`\uD83D\uDD04 Generati ${generated} task ricorrenti per oggi.`).catch((err) =>
+      logger.error({ err }, "Failed to send recurring tasks notification"),
+    );
   }
 }

@@ -1,15 +1,13 @@
-import type { Bot } from "grammy";
 import { and, eq, inArray, isNull, sql, gte } from "drizzle-orm";
 import { agent } from "../core/agent.js";
-import { config } from "../config.js";
 import { db } from "../models/database.js";
 import { employees, tasks, messageLogs } from "../models/schema.js";
 import { getTodayEvents } from "./calendar-sync.js";
 import { getTeamWorkload } from "./workload-tracker.js";
-import { sendSlackMessage, getNotificationsChannel } from "../bot/slack-monitor.js";
+import { sendOwnerNotification } from "../utils/notify.js";
 import { logger } from "../utils/logger.js";
 
-export async function runProactiveCheck(bot: Bot): Promise<void> {
+export async function runProactiveCheck(): Promise<void> {
   const now = new Date();
 
   // Gather operational context
@@ -93,11 +91,7 @@ export async function runProactiveCheck(bot: Bot): Promise<void> {
 
     if (recommendation && recommendation.trim().length > 20) {
       const msg = `\uD83E\uDD16 COO AI — Check Proattivo\n\n${recommendation}`;
-      await bot.api.sendMessage(config.TELEGRAM_OWNER_CHAT_ID, msg);
-      // Also post to Slack notifications channel
-      const _notifCh = getNotificationsChannel(); if (_notifCh) {
-        await sendSlackMessage(_notifCh, msg).catch(() => {});
-      }
+      await sendOwnerNotification(msg);
       logger.info({ issueCount: issues.length }, "Proactive check: recommendations sent");
     }
   } catch (err) {
@@ -105,7 +99,7 @@ export async function runProactiveCheck(bot: Bot): Promise<void> {
   }
 }
 
-export async function generateWeeklyDigest(bot: Bot): Promise<void> {
+export async function generateWeeklyDigest(): Promise<void> {
   const now = new Date();
   const weekAgo = new Date(now);
   weekAgo.setDate(weekAgo.getDate() - 7);
@@ -167,11 +161,7 @@ export async function generateWeeklyDigest(bot: Bot): Promise<void> {
 
   try {
     const msg = `\uD83D\uDCCA Digest Settimanale\n\n${digest}`;
-    await bot.api.sendMessage(config.TELEGRAM_OWNER_CHAT_ID, msg);
-    // Also post to Slack
-    const _notifCh = getNotificationsChannel(); if (_notifCh) {
-      await sendSlackMessage(_notifCh, msg).catch(() => {});
-    }
+    await sendOwnerNotification(msg);
     logger.info("Weekly digest sent");
   } catch (err) {
     logger.error({ err }, "Failed to send weekly digest");

@@ -1,4 +1,4 @@
-import type { AccessRole } from "./auth.js";
+import type { AccessRole } from "./auth-types.js";
 
 /** Which roles can use each AI agent tool */
 export const TOOL_PERMISSIONS: Record<string, AccessRole[]> = {

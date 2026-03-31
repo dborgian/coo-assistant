@@ -1,7 +1,7 @@
 import { Client } from "@notionhq/client";
-import type { Bot } from "grammy";
 import { ilike, eq } from "drizzle-orm";
 import { config } from "../config.js";
+import { sendOwnerNotification } from "../utils/notify.js";
 import { logger } from "../utils/logger.js";
 import { db } from "../models/database.js";
 import { employees } from "../models/schema.js";
@@ -622,7 +622,7 @@ _Aggiornato automaticamente dal COO Assistant_`;
 
 // --- Scheduled Job ---
 
-export async function syncNotionData(bot: Bot): Promise<void> {
+export async function syncNotionData(): Promise<void> {
   if (!isNotionConfigured()) {
     logger.debug("Notion sync skipped — not configured");
     return;
@@ -642,11 +642,7 @@ export async function syncNotionData(bot: Bot): Promise<void> {
       `\u26A0\uFE0F <b>Notion: ${overdueTasks.length} overdue task(s)</b>\n\n` +
       lines.join("\n");
 
-    try {
-      await bot.api.sendMessage(config.TELEGRAM_OWNER_CHAT_ID, msg, { parse_mode: "HTML" });
-    } catch (err) {
-      logger.error({ err }, "Failed to send Notion overdue notification");
-    }
+    await sendOwnerNotification(msg).catch((err) => logger.error({ err }, "Failed to send Notion overdue notification"));
   }
 
   logger.info(

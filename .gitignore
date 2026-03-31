@@ -19,3 +19,7 @@ CLAUDE.local.md
 Thumbs.db
 .idea/
 .vscode/settings.json
+
+# Archived GramJS files (not in use, kept locally)
+src/bot/monitors.ts
+scripts/gramjs-login.ts

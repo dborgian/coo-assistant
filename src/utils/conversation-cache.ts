@@ -32,9 +32,9 @@ if (config.REDIS_URL) {
 }
 
 // --- In-memory fallback ---
-const memCache = new Map<number, { messages: ConversationEntry[]; updatedAt: number }>();
+const memCache = new Map<string, { messages: ConversationEntry[]; updatedAt: number }>();
 
-export async function getConversationHistory(chatId: number): Promise<ConversationEntry[]> {
+export async function getConversationHistory(chatId: string): Promise<ConversationEntry[]> {
   if (redis) {
     try {
       const raw = await redis.get(`${KEY_PREFIX}${chatId}`);
@@ -52,7 +52,7 @@ export async function getConversationHistory(chatId: number): Promise<Conversati
   return s.messages;
 }
 
-export async function addToConversation(chatId: number, role: "user" | "assistant", content: string): Promise<void> {
+export async function addToConversation(chatId: string, role: "user" | "assistant", content: string): Promise<void> {
   if (redis) {
     try {
       const key = `${KEY_PREFIX}${chatId}`;
@@ -76,7 +76,7 @@ export async function addToConversation(chatId: number, role: "user" | "assistan
   memCache.set(chatId, s);
 }
 
-export async function clearConversation(chatId: number): Promise<void> {
+export async function clearConversation(chatId: string): Promise<void> {
   if (redis) {
     await redis.del(`${KEY_PREFIX}${chatId}`).catch((e) => logger.error({ err: e, chatId }, "Redis del failed"));
     return;

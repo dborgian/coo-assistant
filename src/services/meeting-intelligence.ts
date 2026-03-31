@@ -1,12 +1,11 @@
-import type { Bot } from "grammy";
 import { eq, sql } from "drizzle-orm";
-import { config } from "../config.js";
 import { db } from "../models/database.js";
 import { employees } from "../models/schema.js";
+import { sendOwnerNotification } from "../utils/notify.js";
 import { getTodayEvents } from "./calendar-sync.js";
 import { logger } from "../utils/logger.js";
 
-export async function detectMeetingOverload(bot: Bot): Promise<void> {
+export async function detectMeetingOverload(): Promise<void> {
   const events = await getTodayEvents().catch(() => []);
   if (!events.length) return;
 
@@ -19,10 +18,7 @@ export async function detectMeetingOverload(bot: Bot): Promise<void> {
   }
 
   if (totalHoursToday > 5) {
-    await bot.api.sendMessage(
-      config.TELEGRAM_OWNER_CHAT_ID,
-      `\u26A0\uFE0F Meeting overload oggi: ${Math.round(totalHoursToday * 10) / 10}h di meeting (${events.length} eventi). Considera di liberare tempo per deep work.`,
-    );
+    await sendOwnerNotification(`\u26A0\uFE0F Meeting overload oggi: ${Math.round(totalHoursToday * 10) / 10}h di meeting (${events.length} eventi). Considera di liberare tempo per deep work.`);
   }
 }
 

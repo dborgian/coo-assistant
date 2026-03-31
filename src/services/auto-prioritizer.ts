@@ -1,10 +1,8 @@
-import type { Bot } from "grammy";
 import { and, eq, inArray, isNotNull } from "drizzle-orm";
-import { config } from "../config.js";
 import { db } from "../models/database.js";
 import { tasks } from "../models/schema.js";
 import { logger } from "../utils/logger.js";
-import { sendEmployeeMessage } from "../utils/telegram.js";
+import { sendEmployeeNotification, sendOwnerNotification } from "../utils/notify.js";
 
 const PRIORITY_ORDER = ["low", "medium", "high", "urgent"] as const;
 
@@ -12,7 +10,7 @@ function getPriorityIndex(p: string): number {
   return PRIORITY_ORDER.indexOf(p as typeof PRIORITY_ORDER[number]);
 }
 
-export async function runAutoPrioritization(bot: Bot): Promise<void> {
+export async function runAutoPrioritization(): Promise<void> {
   const activeTasks = await db
     .select()
     .from(tasks)
@@ -81,16 +79,12 @@ export async function runAutoPrioritization(bot: Bot): Promise<void> {
       }
     }
     for (const [assigneeId, texts] of byAssignee) {
-      await sendEmployeeMessage(bot, assigneeId, `\uD83D\uDD04 Priorita' aggiornata:\n${texts.join("\n")}`);
+      await sendEmployeeNotification(assigneeId, `\uD83D\uDD04 Priorita' aggiornata:\n${texts.join("\n")}`);
     }
 
     // Summary to owner
     const allTexts = upgrades.map((u) => u.text);
     const message = `\uD83D\uDD04 Auto-prioritizzazione: aggiornati ${upgrades.length} task:\n${allTexts.join("\n")}`;
-    try {
-      await bot.api.sendMessage(config.TELEGRAM_OWNER_CHAT_ID, message);
-    } catch (err) {
-      logger.error({ err }, "Failed to send auto-prioritization notification");
-    }
+    await sendOwnerNotification(message).catch((err) => logger.error({ err }, "Failed to send auto-prioritization notification"));
   }
 }
