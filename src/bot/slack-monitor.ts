@@ -125,6 +125,23 @@ export async function resolveSlackUser(slackUserId: string): Promise<SlackAuthUs
   return null;
 }
 
+/** Split a long message at paragraph/line/word boundaries, never mid-word or mid-markdown. */
+function splitSlackMessage(text: string, maxLen = 3900): string[] {
+  if (text.length <= maxLen) return [text];
+  const chunks: string[] = [];
+  let remaining = text;
+  while (remaining.length > maxLen) {
+    let splitAt = remaining.lastIndexOf("\n\n", maxLen);
+    if (splitAt < 500) splitAt = remaining.lastIndexOf("\n", maxLen);
+    if (splitAt < 500) splitAt = remaining.lastIndexOf(" ", maxLen);
+    if (splitAt < 1) splitAt = maxLen;
+    chunks.push(remaining.slice(0, splitAt).trim());
+    remaining = remaining.slice(splitAt).trim();
+  }
+  if (remaining) chunks.push(remaining);
+  return chunks;
+}
+
 const WAITING_PHRASES = [
   "Okay, dammi un attimo...",
   "Ci penso su un secondo...",
@@ -150,6 +167,11 @@ async function handleSlackQuery(
   }
 
   logger.info({ slackUser: slackUserId, name: user.name, role: user.role, query: text.slice(0, 80) }, "Slack AI query");
+
+  // Add hourglass reaction to user's message to signal processing (FIX 7)
+  if (slackApp && channelId && messageTs) {
+    slackApp.client.reactions.add({ channel: channelId, timestamp: messageTs, name: "hourglass_flowing_sand" }).catch(() => {});
+  }
 
   // Send casual waiting message directly in channel (not thread, so it's visible)
   const phrase = WAITING_PHRASES[Math.floor(Math.random() * WAITING_PHRASES.length)];
@@ -178,8 +200,8 @@ async function handleSlackQuery(
       await slackApp.client.chat.delete({ channel: channelId, ts: waitingTs }).catch(() => {});
     }
 
-    // Split long messages (Slack limit ~4000 chars)
-    const chunks = reply.match(/[\s\S]{1,3900}/g) ?? [reply];
+    // Split long messages at paragraph/line boundaries (FIX 5)
+    const chunks = splitSlackMessage(reply);
     for (const chunk of chunks) {
       await say({ text: chunk, ...(threadTs ? { thread_ts: threadTs } : {}) });
     }
@@ -210,7 +232,7 @@ async function handleSlackQuery(
       await slackApp.client.chat.delete({ channel: channelId, ts: waitingTs }).catch(() => {});
     }
 
-    await say({ text: "Errore nell'elaborazione della richiesta.", ...(threadTs ? { thread_ts: threadTs } : {}) });
+    await say({ text: "Mi dispiace, si è verificato un errore. Riprova tra qualche secondo.", ...(threadTs ? { thread_ts: threadTs } : {}) });
     // Replace hourglass with X on error
     if (slackApp && channelId && messageTs) {
       await slackApp.client.reactions.remove({ channel: channelId, timestamp: messageTs, name: "hourglass_flowing_sand" }).catch(() => {});
@@ -254,6 +276,15 @@ export async function startSlackMonitor(): Promise<boolean> {
     logger.debug({ err }, "Failed to auto-discover Slack channels");
   }
 
+  // FIX 10: Cache bot user ID BEFORE registering message handlers to avoid @mention race at startup
+  try {
+    const authResult = await slackApp.client.auth.test();
+    slackBotUserId = (authResult.user_id as string | undefined) ?? null;
+    logger.info({ slackBotUserId }, "Slack bot user ID cached");
+  } catch (err) {
+    logger.warn({ err }, "Failed to cache Slack bot user ID — @mention filter disabled");
+  }
+
   // Auto-detect when bot is added to a new channel
   slackApp.event("member_joined_channel" as any, async ({ event }: any) => {
     try {
@@ -284,20 +315,23 @@ export async function startSlackMonitor(): Promise<boolean> {
       const channelId = msg.channel;
       const msgTs = msg.ts;
 
-      // Handle DMs — always respond
+      // Handle DMs — always respond; pass thread_ts so replies stay in thread (FIX 9)
       if (msg.channel_type === "im" && userId) {
-        await handleSlackQuery(text, userId, say, channelId, msgTs);
+        await handleSlackQuery(text, userId, say, channelId, msgTs, msg.thread_ts);
         return;
       }
 
-      // Channel messages — always run monitoring pipeline, only respond if @mentioned
+      // Channel messages — run monitoring pipeline for regular messages, respond only on @mention (FIX 2)
       if (userId) {
-        // Run monitoring pipeline in parallel (logging, classification, Telegram notification)
-        onSlackMessage(message, client).catch(() => {});
+        const isBotMention = !!(slackBotUserId && text.includes(`<@${slackBotUserId}>`));
 
-        // Only respond with AI if the bot is @mentioned
-        if (!slackBotUserId || !text.includes(`<@${slackBotUserId}>`)) return;
+        if (!isBotMention) {
+          // Regular channel message — run monitoring pipeline, don't respond
+          onSlackMessage(message, client).catch(() => {});
+          return;
+        }
 
+        // Bot @mention — respond with AI (skip monitoring pipeline to avoid double-reply)
         const cleanText = text.replace(/<@[A-Z0-9]+>/g, "").trim();
         if (!cleanText) {
           await say({ text: "Ciao! Chiedimi quello che vuoi.", thread_ts: msgTs });
@@ -311,7 +345,7 @@ export async function startSlackMonitor(): Promise<boolean> {
   });
 
   // Slack interactive button handlers
-  slackApp.action("complete_task", async ({ action, ack, respond }) => {
+  slackApp.action("complete_task", async ({ action, ack, respond, body }) => {
     await ack();
     try {
       const taskId = (action as any).value;
@@ -319,6 +353,15 @@ export async function startSlackMonitor(): Promise<boolean> {
       if (!task) {
         await respond({ text: "Task non trovato.", replace_original: false });
         return;
+      }
+      // Auth check: owner/admin or task assignee only (FIX 6)
+      const actingUser = await resolveSlackUser((body as any).user.id);
+      if (actingUser) {
+        const canComplete = actingUser.role === "owner" || actingUser.role === "admin" || task.assignedTo === actingUser.employeeId;
+        if (!canComplete) {
+          await respond({ text: "Non hai i permessi per completare questo task.", replace_original: false });
+          return;
+        }
       }
       await db.update(tasks).set({ status: "done", updatedAt: new Date() }).where(eq(tasks.id, taskId));
 
@@ -348,10 +391,22 @@ export async function startSlackMonitor(): Promise<boolean> {
     }
   });
 
-  slackApp.action("snooze_task", async ({ action, ack, respond }) => {
+  slackApp.action("snooze_task", async ({ action, ack, respond, body }) => {
     await ack();
     try {
       const taskId = (action as any).value;
+      // Auth check: owner/admin or task assignee only (FIX 6)
+      const [taskForAuth] = await db.select({ assignedTo: tasks.assignedTo }).from(tasks).where(eq(tasks.id, taskId)).limit(1);
+      if (taskForAuth) {
+        const actingUser = await resolveSlackUser((body as any).user.id);
+        if (actingUser) {
+          const canSnooze = actingUser.role === "owner" || actingUser.role === "admin" || taskForAuth.assignedTo === actingUser.employeeId;
+          if (!canSnooze) {
+            await respond({ text: "Non hai i permessi per questa azione.", replace_original: false });
+            return;
+          }
+        }
+      }
       const pauseUntil = new Date();
       pauseUntil.setDate(pauseUntil.getDate() + 3);
       await db.update(tasks).set({ escalationPausedUntil: pauseUntil, updatedAt: new Date() }).where(eq(tasks.id, taskId));
@@ -364,15 +419,6 @@ export async function startSlackMonitor(): Promise<boolean> {
   });
 
   await slackApp.start();
-
-  // Cache bot user ID so the message handler can filter @mentions
-  try {
-    const authResult = await slackApp.client.auth.test();
-    slackBotUserId = (authResult.user_id as string | undefined) ?? null;
-    logger.info({ slackBotUserId }, "Slack bot user ID cached");
-  } catch (err) {
-    logger.warn({ err }, "Failed to cache Slack bot user ID — @mention filter disabled");
-  }
 
   logger.info(
     { monitoredChannels: config.MONITORED_SLACK_CHANNELS },

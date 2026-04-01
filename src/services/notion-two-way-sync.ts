@@ -24,6 +24,7 @@ export async function syncTasksToNotion(): Promise<void> {
         isNull(tasks.externalId),
         inArray(tasks.status, ["pending", "in_progress"]),
         sql`${tasks.createdAt} < NOW() - INTERVAL '30 seconds'`,
+        sql`(${tasks.isRecurring} IS NOT TRUE)`,
       ),
     );
 

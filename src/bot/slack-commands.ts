@@ -292,7 +292,7 @@ export function registerSlashCommands(slackApp: SlackApp, resolveUser: ResolveFn
       for (const r of reports) {
         const typeIcon = r.reportType === "daily" ? "📊" : "📋";
         const preview = r.content.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim().slice(0, 80);
-        const time = r.createdAt ? new Date(r.createdAt).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" }) : "";
+        const time = r.createdAt ? new Date(r.createdAt).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", timeZone: config.TIMEZONE || "Europe/Rome" }) : "";
         text += `${typeIcon} *${r.reportDate}* ${time} ${r.reportType}\n_${preview}..._\n`;
       }
       text += "\n_Usa /coo-reports [YYYY-MM-DD] per un report completo._";
@@ -362,7 +362,7 @@ export function registerSlashCommands(slackApp: SlackApp, resolveUser: ResolveFn
       for (const [channel, msgs] of byChannel) {
         text += `\n*${channel}* (${msgs.length} messaggi)\n`;
         for (const m of msgs) {
-          const time = m.receivedAt ? new Date(m.receivedAt).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" }) : "";
+          const time = m.receivedAt ? new Date(m.receivedAt).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", timeZone: config.TIMEZONE || "Europe/Rome" }) : "";
           const icon = urgencyIcon[m.urgency ?? "normal"] ?? "⚪";
           text += `  ${time} ${icon} *${m.senderName ?? "?"}*: ${m.content.slice(0, 150)}\n`;
         }

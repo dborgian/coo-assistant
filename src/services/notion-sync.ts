@@ -630,18 +630,23 @@ export async function getNotionTasksViaSearch(): Promise<NotionTask[]> {
 
   const client = getClient();
   const now = new Date();
+  const allPages: any[] = [];
 
   try {
-    const search = await client.search({
-      filter: { property: "object", value: "page" },
-      page_size: 100,
-    });
+    let cursor: string | undefined;
+    do {
+      const res: any = await (client.databases as any).query({
+        database_id: config.NOTION_TASKS_DATABASE_ID,
+        page_size: 100,
+        ...(cursor ? { start_cursor: cursor } : {}),
+      });
+      for (const page of res.results ?? []) {
+        if (!page.archived) allPages.push(page);
+      }
+      cursor = res.has_more ? res.next_cursor : undefined;
+    } while (cursor);
 
-    const dbPages = search.results.filter(
-      (p: any) => p.parent?.database_id === config.NOTION_TASKS_DATABASE_ID && !p.archived,
-    );
-
-    return dbPages.map((page: any) => {
+    return allPages.map((page: any) => {
       const props = page.properties ?? {};
       const dueDate = extractDate(props, "Due date", "Due Date", "Due", "Deadline", "Date");
       return {
@@ -656,7 +661,7 @@ export async function getNotionTasksViaSearch(): Promise<NotionTask[]> {
       };
     });
   } catch (err) {
-    logger.error({ err }, "Failed to fetch Notion tasks via search");
+    logger.error({ err }, "Failed to fetch Notion tasks via database query");
     return [];
   }
 }

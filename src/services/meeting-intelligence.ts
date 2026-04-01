@@ -1,4 +1,5 @@
 import { eq, sql } from "drizzle-orm";
+import { config } from "../config.js";
 import { db } from "../models/database.js";
 import { employees } from "../models/schema.js";
 import { sendOwnerNotification } from "../utils/notify.js";
@@ -36,7 +37,7 @@ export async function getMeetingStats(): Promise<string> {
       : 0;
     totalMinutes += duration;
 
-    const startTime = e.start ? new Date(e.start).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" }) : "?";
+    const startTime = e.start ? new Date(e.start).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", timeZone: config.TIMEZONE || "Europe/Rome" }) : "?";
     eventList.push(`- ${startTime}: ${e.summary} (${duration} min)`);
   }
 

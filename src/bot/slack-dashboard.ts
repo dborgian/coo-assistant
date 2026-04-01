@@ -6,6 +6,7 @@
  */
 import type { App as SlackApp } from "@slack/bolt";
 import { and, desc, eq, inArray, lt, sql } from "drizzle-orm";
+import { config } from "../config.js";
 import { db } from "../models/database.js";
 import { dailyReports, messageLogs, tasks } from "../models/schema.js";
 import { agent } from "../core/agent.js";
@@ -199,7 +200,7 @@ export function registerDashboardActions(slackApp: SlackApp, resolveUser: (slack
           msgs.sort((a, b) => String(a.receivedAt ?? "").localeCompare(String(b.receivedAt ?? "")));
           text += `\n*${channel}* (${msgs.length} msgs)\n`;
           for (const m of msgs.slice(-5)) {
-            const time = m.receivedAt ? new Date(m.receivedAt).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" }) : "";
+            const time = m.receivedAt ? new Date(m.receivedAt).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", timeZone: config.TIMEZONE || "Europe/Rome" }) : "";
             text += `  ${time} *${m.senderName ?? "?"}*: ${m.content.slice(0, 100)}\n`;
           }
           if (msgs.length > 5) text += `  _... +${msgs.length - 5} altri_\n`;
@@ -262,8 +263,9 @@ export function registerDashboardActions(slackApp: SlackApp, resolveUser: (slack
         text += "Nessun evento oggi.";
       } else {
         for (const e of events) {
-          const start = e.start ? new Date(e.start).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" }) : "";
-          const end = e.end ? new Date(e.end).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" }) : "";
+          const tz = config.TIMEZONE || "Europe/Rome";
+          const start = e.start ? new Date(e.start).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", timeZone: tz }) : "";
+          const end = e.end ? new Date(e.end).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", timeZone: tz }) : "";
           text += `\n🕒 ${start}–${end}\n*${e.summary}*\n`;
           if (e.location) text += `📍 ${e.location}\n`;
         }
@@ -462,7 +464,7 @@ export function registerDashboardActions(slackApp: SlackApp, resolveUser: (slack
         for (const r of reports) {
           const typeIcon = r.reportType === "daily" ? "📊" : "📋";
           const preview = r.content.replace(/<[^>]+>/g, "").replace(/[#*_~`\-|>]/g, "").replace(/\s+/g, " ").trim().slice(0, 60);
-          const time = r.createdAt ? new Date(r.createdAt).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" }) : "";
+          const time = r.createdAt ? new Date(r.createdAt).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", timeZone: config.TIMEZONE || "Europe/Rome" }) : "";
           text += `${typeIcon} *${r.reportDate}* ${time} ${r.reportType}\n_${preview}..._\n`;
         }
         text += "\n_Usa /coo-reports [YYYY-MM-DD] per un report completo._";

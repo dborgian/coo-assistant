@@ -255,10 +255,14 @@ Respond in JSON format:
     try {
       return JSON.parse(result);
     } catch {
-      const start = result.indexOf("{");
-      const end = result.lastIndexOf("}") + 1;
-      if (start >= 0 && end > start) {
-        return JSON.parse(result.slice(start, end));
+      try {
+        const start = result.indexOf("{");
+        const end = result.lastIndexOf("}") + 1;
+        if (start >= 0 && end > start) {
+          return JSON.parse(result.slice(start, end));
+        }
+      } catch {
+        // fall through to default
       }
       return {
         urgency: "normal",
@@ -1122,7 +1126,7 @@ ${JSON.stringify(data, null, 2)}`;
         if (action === "update_task") {
           if (!input.title) return "Titolo del task richiesto per l'aggiornamento.";
           // Find task in internal DB by title to get Notion page ID
-          const foundAll = await db.select({ id: tasks.id, externalId: tasks.externalId, title: tasks.title })
+          const foundAll = await db.select({ id: tasks.id, externalId: tasks.externalId, title: tasks.title, autoScheduled: tasks.autoScheduled })
             .from(tasks)
             .where(ilike(tasks.title, `%${input.title}%`))
             .limit(5);
@@ -1165,6 +1169,16 @@ ${JSON.stringify(data, null, 2)}`;
             }
             if (Object.keys(dbUpdates).length > 1) {
               await db.update(tasks).set(dbUpdates).where(eq(tasks.externalId, found[0].externalId));
+            }
+            // Trigger reschedule if priority or deadline changed and task is auto-scheduled
+            if ((input.priority || input.due_date) && found[0]?.autoScheduled && found[0]?.id) {
+              await rescheduleTask(found[0].id).catch(() => {});
+            }
+            // Sync dueDate changes to Google Tasks
+            if (input.due_date && found[0]?.id) {
+              updateGoogleTask(found[0].id, {
+                dueDate: parseLocalDate(input.due_date, input.timezone ?? userTz),
+              }).catch(() => {});
             }
           }
 
@@ -1537,8 +1551,9 @@ ${JSON.stringify(data, null, 2)}`;
                     scheduledStart: slot.start, scheduledEnd: slot.end,
                     autoScheduled: true, calendarEventId: ev.data.id, updatedAt: new Date(),
                   }).where(eq(tasks.id, task.id));
-                  const time = slot.start.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" });
-                  const date = slot.start.toLocaleDateString("it-IT");
+                  const tz = userTz || config.TIMEZONE || "Europe/Rome";
+                  const time = slot.start.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", timeZone: tz });
+                  const date = slot.start.toLocaleDateString("it-IT", { timeZone: tz });
                   return `Task "${task.title}" schedulato nel calendario${calendarId !== "primary" ? ` di ${calendarId}` : ""}: ${date} alle ${time} (${duration} min).`;
                 }
               }
@@ -1562,8 +1577,9 @@ ${JSON.stringify(data, null, 2)}`;
                 scheduledStart: remaining.start, scheduledEnd: remaining.end,
                 autoScheduled: true, calendarEventId: ev.data.id, updatedAt: new Date(),
               }).where(eq(tasks.id, task.id));
-              const time = remaining.start.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" });
-              const date = remaining.start.toLocaleDateString("it-IT");
+              const tz2 = userTz || config.TIMEZONE || "Europe/Rome";
+              const time = remaining.start.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", timeZone: tz2 });
+              const date = remaining.start.toLocaleDateString("it-IT", { timeZone: tz2 });
               return `Task "${task.title}" schedulato nel calendario${calendarId !== "primary" ? ` di ${calendarId}` : ""}: ${date} alle ${time} (${duration} min).`;
             }
           }
@@ -1924,13 +1940,20 @@ Genera 5-10 task concreti e actionable.`,
     let textParts: string[] = [];
 
     for (let i = 0; i < 5; i++) { // max 5 tool call rounds
-      const response = await this.client.messages.create({
-        model: this.model,
-        max_tokens: 4096,
-        system: fullSystemPrompt,
-        tools: filteredTools,
-        messages,
-      });
+      let response: Awaited<ReturnType<Anthropic["messages"]["create"]>>;
+      try {
+        response = await this.client.messages.create({
+          model: this.model,
+          max_tokens: 4096,
+          system: fullSystemPrompt,
+          tools: filteredTools,
+          messages,
+        });
+      } catch (err) {
+        logger.error({ err }, "Claude API error in tool loop");
+        if (textParts.length) break; // return accumulated text
+        throw err; // re-throw if nothing accumulated yet
+      }
 
       // Collect text blocks and tool use blocks
       const toolUseBlocks = response.content.filter((b) => b.type === "tool_use");

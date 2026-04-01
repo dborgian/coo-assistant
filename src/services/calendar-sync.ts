@@ -196,7 +196,7 @@ export async function checkUpcomingEvents(): Promise<void> {
   for (const ev of upcoming) {
     if (notifiedEventIds.has(ev.id)) continue;
     notifiedEventIds.add(ev.id);
-    const time = new Date(ev.start).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" });
+    const time = new Date(ev.start).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", timeZone: config.TIMEZONE || "Europe/Rome" });
     let msg = `\u23F0 <b>Meeting tra 15 min</b>\n${ev.summary} alle ${time}`;
     if (ev.location) msg += `\n\uD83D\uDCCD ${ev.location}`;
     await sendOwnerNotification(msg);
