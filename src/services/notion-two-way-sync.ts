@@ -1,9 +1,10 @@
-import { and, eq, isNull, isNotNull, sql, inArray, not } from "drizzle-orm";
+import { and, eq, isNull, isNotNull, sql, inArray } from "drizzle-orm";
 import { sendOwnerNotification } from "../utils/notify.js";
 import { db } from "../models/database.js";
 import { tasks, employees } from "../models/schema.js";
 import { createNotionTask, isNotionConfigured, getNotionTasksViaSearch, updateNotionTaskStatus, updateNotionTaskProperties, archiveNotionPage, extractNotionPageId } from "./notion-sync.js";
 import { completeGoogleTask } from "./google-tasks-sync.js";
+import { deleteCalendarEvent } from "./calendar-sync.js";
 import { logger } from "../utils/logger.js";
 
 export async function syncTasksToNotion(): Promise<void> {
@@ -30,6 +31,13 @@ export async function syncTasksToNotion(): Promise<void> {
 
   for (const task of unsyncedTasks) {
     try {
+      // Resolve assignee name for Notion
+      let assigneeName: string | undefined;
+      if (task.assignedTo) {
+        const [emp] = await db.select({ name: employees.name }).from(employees).where(eq(employees.id, task.assignedTo)).limit(1);
+        assigneeName = emp?.name ?? undefined;
+      }
+
       const url = await createNotionTask(task.title, {
         status: task.status === "in_progress" ? "In Progress" : undefined,
         priority: task.priority
@@ -38,6 +46,7 @@ export async function syncTasksToNotion(): Promise<void> {
         dueDate: task.dueDate
           ? new Date(task.dueDate).toISOString().split("T")[0]
           : undefined,
+        assignee: assigneeName,
       });
 
       if (url) {
@@ -158,7 +167,7 @@ export async function syncNotionToTasks(): Promise<void> {
     for (const nt of notionTasks) {
       // Check if already in our DB by notion ID
       const [existing] = await db
-        .select({ id: tasks.id, status: tasks.status, priority: tasks.priority, dueDate: tasks.dueDate })
+        .select({ id: tasks.id, status: tasks.status, priority: tasks.priority, dueDate: tasks.dueDate, calendarEventId: tasks.calendarEventId })
         .from(tasks)
         .where(sql`${tasks.externalId} LIKE ${"notion:" + nt.id + "%"}`)
         .limit(1);
@@ -184,6 +193,9 @@ export async function syncNotionToTasks(): Promise<void> {
           await db.update(tasks).set(updates).where(eq(tasks.id, existing.id));
           if (updates.status === "done" || updates.status === "cancelled") {
             completeGoogleTask(existing.id).catch((e) => logger.error({ err: e, taskId: existing.id }, "Google Tasks complete failed on Notion sync"));
+            if (existing.calendarEventId) {
+              deleteCalendarEvent(existing.calendarEventId).catch((e) => logger.error({ err: e, eventId: existing.calendarEventId }, "Calendar event delete failed on Notion sync"));
+            }
           }
           statusUpdated++;
         }

@@ -6,6 +6,10 @@ import { getGoogleAuth, isGoogleConfigured } from "../core/google-auth.js";
 import type { GoogleAuth } from "../core/google-auth.js";
 import { logger } from "../utils/logger.js";
 
+// Track which event IDs have already been notified today to avoid duplicate alerts
+const notifiedEventIds = new Set<string>();
+let notifiedDate = new Date().toLocaleDateString("en-CA", { timeZone: config.TIMEZONE || "UTC" });
+
 /**
  * Register a Google Calendar push notification watch.
  * Google will POST to /webhooks/calendar whenever calendar events change.
@@ -76,26 +80,37 @@ export interface CalendarEvent {
   organizer?: string;
 }
 
-export async function getTodayEvents(authOverride?: GoogleAuth | null, calendarId = "primary"): Promise<CalendarEvent[]> {
+/** Compute UTC-absolute boundaries for a given YYYY-MM-DD date in the configured timezone. */
+function getDayBoundaries(dateStr: string): { dayStart: Date; dayEnd: Date } {
+  const tz = config.TIMEZONE || "UTC";
+  const ref = new Date();
+  const tzMs = new Date(ref.toLocaleString("en-US", { timeZone: tz })).getTime();
+  const utcMs = new Date(ref.toLocaleString("en-US", { timeZone: "UTC" })).getTime();
+  const tzOffsetMs = tzMs - utcMs; // positive for UTC+
+  return {
+    dayStart: new Date(new Date(`${dateStr}T00:00:00Z`).getTime() - tzOffsetMs),
+    dayEnd: new Date(new Date(`${dateStr}T23:59:59.999Z`).getTime() - tzOffsetMs),
+  };
+}
+
+export async function getTodayEvents(authOverride?: GoogleAuth | null, calendarId = "primary", dateStr?: string): Promise<CalendarEvent[]> {
   const auth = authOverride ?? getGoogleAuth();
   if (!auth) return [];
 
   const calendar = google.calendar({ version: "v3", auth });
 
-  const now = new Date();
-  const startOfDay = new Date(now);
-  startOfDay.setHours(0, 0, 0, 0);
-  const endOfDay = new Date(now);
-  endOfDay.setHours(23, 59, 59, 999);
+  const tz = config.TIMEZONE || "UTC";
+  const resolvedDate = dateStr ?? new Date().toLocaleDateString("en-CA", { timeZone: tz });
+  const { dayStart, dayEnd } = getDayBoundaries(resolvedDate);
 
   try {
     const res = await calendar.events.list({
       calendarId,
-      timeMin: startOfDay.toISOString(),
-      timeMax: endOfDay.toISOString(),
+      timeMin: dayStart.toISOString(),
+      timeMax: dayEnd.toISOString(),
       singleEvents: true,
       orderBy: "startTime",
-      timeZone: config.TIMEZONE,
+      timeZone: tz ?? config.TIMEZONE ?? "UTC",
     });
 
     return (res.data.items ?? []).map((e) => ({
@@ -169,18 +184,30 @@ export async function checkUpcomingEvents(): Promise<void> {
   const events = await getTodayEvents();
   if (events.length === 0) return;
 
-  // Notify about events starting soon
+  // Reset dedup set if date has changed (new day)
+  const todayKey = new Date().toLocaleDateString("en-CA", { timeZone: config.TIMEZONE || "UTC" });
+  if (todayKey !== notifiedDate) {
+    notifiedEventIds.clear();
+    notifiedDate = todayKey;
+  }
+
+  // Notify about events starting soon (dedup by event ID)
   const upcoming = getUpcomingSoon(events);
   for (const ev of upcoming) {
+    if (notifiedEventIds.has(ev.id)) continue;
+    notifiedEventIds.add(ev.id);
     const time = new Date(ev.start).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" });
     let msg = `\u23F0 <b>Meeting tra 15 min</b>\n${ev.summary} alle ${time}`;
     if (ev.location) msg += `\n\uD83D\uDCCD ${ev.location}`;
     await sendOwnerNotification(msg);
   }
 
-  // Notify about conflicts
+  // Notify about conflicts (dedup by pair key)
   const conflicts = detectConflicts(events);
   for (const [a, b] of conflicts) {
+    const conflictKey = `conflict:${[a.id, b.id].sort().join(":")}`;
+    if (notifiedEventIds.has(conflictKey)) continue;
+    notifiedEventIds.add(conflictKey);
     const msg = `\u26A0\uFE0F <b>Conflitto calendario</b>\n"${a.summary}" e "${b.summary}" si sovrappongono!`;
     await sendOwnerNotification(msg);
   }

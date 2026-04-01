@@ -352,9 +352,13 @@ export async function rebuildBrainFromDB(): Promise<void> {
   }
 
   // Rebuild open decisions from meeting keyDecisions (if decisions key is also empty)
-  if (needDecisions && rebuiltMeetings.length > 0) {
+  if (needDecisions) {
+    // Use rebuiltMeetings if just fetched; otherwise fetch from DB directly
+    const meetingsForDecisions: BrainMeeting[] = rebuiltMeetings.length > 0
+      ? rebuiltMeetings
+      : meetingsRaw ? (JSON.parse(meetingsRaw) as BrainMeeting[]) : [];
     const allDecisions: OpenDecision[] = [];
-    for (const m of rebuiltMeetings) {
+    for (const m of meetingsForDecisions) {
       for (const d of m.keyDecisions) {
         allDecisions.push({ decision: d, meeting: m.title, date: m.date });
       }
@@ -432,10 +436,15 @@ export async function queryBrain(query: string, category?: string): Promise<stri
   // "fact" = search all facts; specific sub-category = filter by category
   if (!category || category === "fact" || FACT_CATEGORIES.has(category)) {
     const facts: CompanyFact[] = factsRaw ? JSON.parse(factsRaw) : [];
-    const matched = facts.filter((f) =>
-      f.fact.toLowerCase().includes(q) ||
-      (FACT_CATEGORIES.has(category ?? "") && f.category === category),
-    );
+    const isSpecificCategory = FACT_CATEGORIES.has(category ?? "");
+    const matched = facts.filter((f) => {
+      const matchesQuery = f.fact.toLowerCase().includes(q);
+      if (isSpecificCategory) {
+        // When a specific category is requested, filter by category AND query (or just category if query is empty)
+        return f.category === category && (q === "" || matchesQuery);
+      }
+      return matchesQuery;
+    });
     if (matched.length) {
       parts.push(`FATTI:\n${matched.slice(0, 10).map((f) =>
         `• [${f.category}] ${f.fact}`,

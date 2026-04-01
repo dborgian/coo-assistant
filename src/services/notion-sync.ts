@@ -507,11 +507,15 @@ export async function archiveNotionPage(notionPageId: string): Promise<boolean> 
 
 export async function updateNotionTaskProperties(
   notionPageId: string,
-  updates: { priority?: string; dueDate?: string; description?: string; assignee?: string },
+  updates: { title?: string; priority?: string; dueDate?: string; description?: string; assignee?: string },
 ): Promise<boolean> {
   const client = getClient();
   try {
     const properties: Record<string, any> = {};
+
+    if (updates.title) {
+      properties["Name"] = { title: [{ text: { content: updates.title } }] };
+    }
 
     // Discover schema for flexible property name resolution
     let dbInfo: any = null;

@@ -56,7 +56,7 @@ REGOLE DI STILE:
 - IMPORTANTE: il campo [Messaggio da: Nome] indica CHI sta parlando. Non confondere mittente e destinatario.
 
 RESPONSABILITA:
-- Monitorare tutti i canali (Slack, Telegram, Gmail, Calendar, Notion)
+- Monitorare tutti i canali (Slack, Gmail, Calendar, Notion)
 - Tracciare task, scadenze e responsabilita del team
 - Generare report operativi completi
 - Identificare proattivamente problemi operativi
@@ -208,7 +208,6 @@ function parseLocalDate(dateStr: string, tzOverride?: string): Date {
 class COOAgent {
   private client: Anthropic;
   private model: string;
-  private collectedFiles: Array<{ buffer: Buffer; filename: string }> = [];
 
   constructor() {
     this.client = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY });
@@ -802,7 +801,7 @@ ${JSON.stringify(data, null, 2)}`;
   ];
 
   // --- Execute a tool call ---
-  private async executeTool(name: string, input: Record<string, any>, userAuth?: GoogleAuth | null, userTz?: string): Promise<string> {
+  private async executeTool(name: string, input: Record<string, any>, userAuth?: GoogleAuth | null, userTz?: string, collectedFiles?: Array<{ buffer: Buffer; filename: string }>): Promise<string> {
     try {
       if (name === "create_task") {
         let assignedTo: string | null = null;
@@ -974,7 +973,7 @@ ${JSON.stringify(data, null, 2)}`;
           const pdf = await generateEmployeeReportPdf(input.employee_name, weekAgo, now);
           const fileName = `employee-${input.employee_name.toLowerCase()}-${now.toISOString().split("T")[0]}.pdf`;
           const driveFile = await uploadFileToDrive(fileName, pdf, "application/pdf", config.DRIVE_EMPLOYEE_FOLDER_ID || undefined).catch(() => null);
-          this.collectedFiles.push({ buffer: pdf, filename: fileName });
+          collectedFiles?.push({ buffer: pdf, filename: fileName });
           return `Report PDF per ${input.employee_name} generato.${driveFile ? ` Salvato su Drive: ${driveFile.webViewLink}` : ""}`;
         }
 
@@ -985,7 +984,7 @@ ${JSON.stringify(data, null, 2)}`;
           const pdf = await generateWeeklyReportPdf(start, end);
           const fileName = `weekly-report-${start.toISOString().split("T")[0]}.pdf`;
           const driveFile = await uploadFileToDrive(fileName, pdf, "application/pdf", config.DRIVE_DAILY_FOLDER_ID || undefined).catch(() => null);
-          this.collectedFiles.push({ buffer: pdf, filename: fileName });
+          collectedFiles?.push({ buffer: pdf, filename: fileName });
           return `Report PDF settimanale generato.${driveFile ? ` Salvato su Drive: ${driveFile.webViewLink}` : ""}`;
         }
 
@@ -1026,7 +1025,7 @@ ${JSON.stringify(data, null, 2)}`;
         });
         const fileName = `daily-report-${today}.pdf`;
         const driveFile = await uploadFileToDrive(fileName, pdf, "application/pdf", config.DRIVE_DAILY_FOLDER_ID || undefined).catch(() => null);
-        this.collectedFiles.push({ buffer: pdf, filename: fileName });
+        collectedFiles?.push({ buffer: pdf, filename: fileName });
         await db.insert(dailyReports).values({ reportDate: today, reportType: "on_demand", content: narrative });
         return `Report PDF giornaliero generato.${driveFile ? ` Salvato su Drive: ${driveFile.webViewLink}` : ""}`;
       }
@@ -1085,7 +1084,10 @@ ${JSON.stringify(data, null, 2)}`;
             assignedTo: notionAssignedTo,
             dueDate: notionDue,
             priority: input.priority ?? "medium",
-            source: "notion",
+            // If Notion creation succeeded use "notion" source with externalId;
+            // if it failed (url=null or pageId extraction failed), use "ai" so the
+            // syncTasksToNotion cron can pick it up and retry.
+            source: notionPageId ? "notion" : "ai",
             externalId: notionPageId ? `notion:${notionPageId}` : null,
             status: "pending",
           }).returning({ id: tasks.id });
@@ -1116,10 +1118,14 @@ ${JSON.stringify(data, null, 2)}`;
         if (action === "update_task") {
           if (!input.title) return "Titolo del task richiesto per l'aggiornamento.";
           // Find task in internal DB by title to get Notion page ID
-          const found = await db.select({ id: tasks.id, externalId: tasks.externalId, title: tasks.title })
+          const foundAll = await db.select({ id: tasks.id, externalId: tasks.externalId, title: tasks.title })
             .from(tasks)
             .where(ilike(tasks.title, `%${input.title}%`))
-            .limit(1);
+            .limit(5);
+          if (foundAll.length > 1) {
+            return `Trovati ${foundAll.length} task corrispondenti:\n${foundAll.map((t) => `- "${t.title}"`).join("\n")}\nSpecifica meglio il titolo.`;
+          }
+          const found = foundAll;
           const notionId = found[0]?.externalId?.replace(/^notion(-done)?:/, "");
           if (!notionId) return `Task "${input.title}" non trovato su Notion. Verifica che sia sincronizzato.`;
 
@@ -1162,10 +1168,14 @@ ${JSON.stringify(data, null, 2)}`;
         }
         if (action === "delete_task") {
           if (!input.title) return "Titolo del task richiesto per eliminare da Notion.";
-          const found = await db.select({ id: tasks.id, externalId: tasks.externalId, title: tasks.title })
+          const foundAll = await db.select({ id: tasks.id, externalId: tasks.externalId, title: tasks.title })
             .from(tasks)
             .where(ilike(tasks.title, `%${input.title}%`))
-            .limit(1);
+            .limit(5);
+          if (foundAll.length > 1) {
+            return `Trovati ${foundAll.length} task corrispondenti:\n${foundAll.map((t) => `- "${t.title}"`).join("\n")}\nSpecifica meglio il titolo.`;
+          }
+          const found = foundAll;
           const notionId = found[0]?.externalId?.replace(/^notion(-done)?:/, "");
 
           const archivedTitles: string[] = [];
@@ -1248,7 +1258,7 @@ ${JSON.stringify(data, null, 2)}`;
         const matchingTasks = await db.select().from(tasks)
           .where(sql`${tasks.title} ILIKE ${"%" + input.task_title + "%"}`).limit(5);
         if (!matchingTasks.length) return `Task "${input.task_title}" non trovato.`;
-        if (matchingTasks.length > 1 && input.action === "edit") {
+        if (matchingTasks.length > 1 && (input.action === "edit" || input.action === "delete")) {
           return `Trovati ${matchingTasks.length} task corrispondenti:\n${matchingTasks.map((t) => `- "${t.title}" (${t.status})`).join("\n")}\nSpecifica meglio il titolo.`;
         }
         const task = matchingTasks[0];
@@ -1265,7 +1275,7 @@ ${JSON.stringify(data, null, 2)}`;
               searchNotion(t.title).then((results) => {
                 const match = results.find((r) => r.title.toLowerCase() === t.title.toLowerCase());
                 if (match) {
-                  const pageId = match.url.match(/[a-f0-9]{32}$/)?.[0] ?? match.url.split("/").pop()?.replace(/-/g, "");
+                  const pageId = extractNotionPageId(match.url);
                   if (pageId) archiveNotionPage(pageId).catch(() => {});
                 }
               }).catch(() => {});
@@ -1283,7 +1293,12 @@ ${JSON.stringify(data, null, 2)}`;
         if (input.new_title) updates.title = input.new_title;
         if (input.new_description) updates.description = input.new_description;
         if (input.new_priority) updates.priority = input.new_priority;
-        if (input.new_due_date) updates.dueDate = parseLocalDate(input.new_due_date, input.timezone ?? userTz);
+        if (input.new_due_date) {
+          updates.dueDate = parseLocalDate(input.new_due_date, input.timezone ?? userTz);
+          // Reset escalation level so the task re-escalates from scratch with the new deadline
+          updates.escalationLevel = 0;
+          updates.lastEscalatedAt = null;
+        }
         if (input.new_assigned_to) {
           const [emp] = await db.select().from(employees)
             .where(sql`${employees.name} ILIKE ${"%" + input.new_assigned_to + "%"}`).limit(1);
@@ -1303,6 +1318,7 @@ ${JSON.stringify(data, null, 2)}`;
         if (task.externalId?.startsWith("notion:")) {
           const notionPageId = task.externalId.replace(/^notion(-done)?:/, "");
           updateNotionTaskProperties(notionPageId, {
+            title: input.new_title,
             priority: input.new_priority,
             dueDate: input.new_due_date,
             assignee: input.new_assigned_to,
@@ -1337,6 +1353,9 @@ ${JSON.stringify(data, null, 2)}`;
           return lines.join("\n");
         }
 
+        const requestedDate = (input.date as string | undefined) || undefined;
+        const dateLabel = requestedDate ? new Date(requestedDate).toLocaleDateString("it-IT", { weekday: "long", day: "numeric", month: "long", timeZone: displayTz }) : "oggi";
+
         if (empName) {
           const [emp] = await db.select({ name: employees.name, googleRefreshToken: employees.googleRefreshToken })
             .from(employees)
@@ -1344,14 +1363,14 @@ ${JSON.stringify(data, null, 2)}`;
             .limit(1);
           if (!emp?.googleRefreshToken) return `Calendario di "${input.employee_name}" non disponibile (Google non connesso).`;
           const empAuth = getUserGoogleAuth(emp.googleRefreshToken);
-          const events = await getTodayEvents(empAuth, "primary");
-          if (!events.length) return `Nessun evento nel calendario di ${emp.name} oggi.`;
-          return `**${emp.name}:**\n${formatEvents(events)}`;
+          const events = await getTodayEvents(empAuth, "primary", requestedDate);
+          if (!events.length) return `Nessun evento nel calendario di ${emp.name} ${dateLabel}.`;
+          return `**${emp.name}** (${dateLabel}):\n${formatEvents(events)}`;
         }
 
-        const events = await getTodayEvents(userAuth);
-        if (!events.length) return "Nessun evento in calendario per oggi.";
-        return formatEvents(events);
+        const events = await getTodayEvents(userAuth, "primary", requestedDate);
+        if (!events.length) return `Nessun evento in calendario per ${dateLabel}.`;
+        return `**Calendario ${dateLabel}:**\n${formatEvents(events)}`;
       }
 
       if (name === "snooze_escalation") {
@@ -1585,7 +1604,7 @@ ${JSON.stringify(data, null, 2)}`;
       if (name === "get_topics") {
         const type = input.type ?? "all";
         if (type === "clients") return getClientMentions(input.days ?? 7);
-        return getTopics(input.period ?? "today");
+        return getTopics(String(input.days ?? 7));
       }
 
       if (name === "get_meeting_intelligence") {
@@ -1597,7 +1616,7 @@ ${JSON.stringify(data, null, 2)}`;
           .where(sql`${tasks.title} ILIKE ${"%" + input.task_title + "%"}`).limit(1);
         if (!task) return `Task "${input.task_title}" non trovato.`;
         if (!task.externalId?.startsWith("notion:")) return `Task "${task.title}" non ha un link Notion. Verra' sincronizzato al prossimo ciclo.`;
-        const notionPageId = task.externalId.replace("notion:", "").replace("notion-done:", "");
+        const notionPageId = task.externalId.replace(/^notion(-done)?:/, "");
         const ok = await addNotionComment(notionPageId, input.comment);
         return ok ? `Commento aggiunto al task "${task.title}" su Notion.` : `Errore nell'aggiungere il commento su Notion.`;
       }
@@ -1855,7 +1874,7 @@ Genera 5-10 task concreti e actionable.`,
     userName?: string,
     chatId?: string,
   ): Promise<AgentResponse> {
-    this.collectedFiles = [];
+    const collectedFiles: Array<{ buffer: Buffer; filename: string }> = [];
 
     // Resolve per-user Google auth (falls back to global if no personal token)
     const userAuth = await getAuthForEmployee(employeeId);
@@ -1926,7 +1945,7 @@ Genera 5-10 task concreti e actionable.`,
       for (const block of toolUseBlocks) {
         if (block.type === "tool_use") {
           logger.info({ tool: block.name, input: block.input }, "AI executing tool");
-          const result = await this.executeTool(block.name, block.input as Record<string, any>, userAuth, userTz);
+          const result = await this.executeTool(block.name, block.input as Record<string, any>, userAuth, userTz, collectedFiles);
           toolResults.push({ type: "tool_result", tool_use_id: block.id, content: result });
         }
       }
@@ -1951,7 +1970,7 @@ Genera 5-10 task concreti e actionable.`,
 
     return {
       text: responseText,
-      files: this.collectedFiles.length ? this.collectedFiles : undefined,
+      files: collectedFiles.length ? collectedFiles : undefined,
     };
   }
 

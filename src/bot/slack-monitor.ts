@@ -7,6 +7,7 @@ import { clients, employees, intelligenceEvents, messageLogs, tasks } from "../m
 import { runInlineExtractors } from "../services/intelligence-pipeline.js";
 import { updateNotionTaskStatus } from "../services/notion-sync.js";
 import { completeGoogleTask } from "../services/google-tasks-sync.js";
+import { deleteCalendarEvent } from "../services/calendar-sync.js";
 import { logger } from "../utils/logger.js";
 import { initNotify } from "../utils/notify.js";
 import type { AccessRole } from "./auth-types.js";
@@ -168,7 +169,8 @@ async function handleSlackQuery(
   }
 
   try {
-    const response = await agent.answerQuery(text, user.role, user.employeeId, user.name, channelId);
+    // Use slackUserId as chatId so conversation history is per-user, not per-channel
+    const response = await agent.answerQuery(text, user.role, user.employeeId, user.name, slackUserId);
     const reply = response.text || "Operazione completata.";
 
     // Delete waiting message
@@ -330,6 +332,13 @@ export async function startSlackMonitor(): Promise<boolean> {
 
       // Sync to Google Tasks
       completeGoogleTask(taskId).catch(() => {});
+
+      // Remove associated calendar event if present
+      if (task.calendarEventId) {
+        deleteCalendarEvent(task.calendarEventId).catch((e) =>
+          logger.error({ err: e, eventId: task.calendarEventId }, "Calendar event delete on Slack complete failed"),
+        );
+      }
 
       await respond({ text: "\u2705 Task completato!", replace_original: false });
       logger.info({ taskId }, "Task completed via Slack button");

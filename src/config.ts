@@ -17,6 +17,7 @@ const envSchema = z.object({
   GOOGLE_REFRESH_TOKEN: z.string().default(""),
 
   // Gmail
+  EMAIL_FROM_ADDRESS: z.string().default(""),
   EMAIL_CHECK_INTERVAL_MINUTES: z.coerce.number().default(10),
 
   // Google Drive

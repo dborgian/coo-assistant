@@ -59,6 +59,8 @@ export function formatMemoriesForPrompt(memories: MemoryEntry[]): string {
 
 /** Uses claude-haiku to extract preferences/patterns and upserts them into DB. */
 export async function extractAndSaveMemories(chatId: string, query: string, response: string): Promise<void> {
+  // Skip trivial exchanges — not worth an API call
+  if (query.length < 10 || response.length < 20) return;
   try {
     const result = await extractor.messages.create({
       model: "claude-haiku-4-5-20251001",
@@ -77,7 +79,9 @@ NON estrarre: fatti banali, info gia' nel sistema, richieste chiaramente one-tim
       messages: [{ role: "user", content: `Utente: ${query}\n\nAssistente: ${response}` }],
     });
 
-    const raw = result.content.find((b) => b.type === "text")?.text ?? "[]";
+    const rawText = result.content.find((b) => b.type === "text")?.text ?? "[]";
+    // Strip markdown code fences if Haiku wraps the JSON
+    const raw = rawText.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
     let extracted: Array<{ category: string; key: string; value: string }>;
     try {
       extracted = JSON.parse(raw);

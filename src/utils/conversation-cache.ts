@@ -40,8 +40,8 @@ export async function getConversationHistory(chatId: string): Promise<Conversati
       const raw = await redis.get(`${KEY_PREFIX}${chatId}`);
       return raw ? (JSON.parse(raw) as ConversationEntry[]) : [];
     } catch (e) {
-      logger.error({ err: e, chatId }, "Redis get failed");
-      return [];
+      logger.error({ err: e, chatId }, "Redis get failed — falling back to in-memory cache");
+      // Fall through to memCache on Redis error
     }
   }
   const s = memCache.get(chatId);

@@ -53,6 +53,13 @@ export const TOOL_PERMISSIONS: Record<string, AccessRole[]> = {
 
   // CONFIG: team management (owner only)
   manage_team: ["owner"],
+
+  // COMPANY BRAIN + MEETING NOTES (owner/admin)
+  query_brain: ["owner", "admin"],
+  add_brain_fact: ["owner", "admin"],
+  resolve_decision: ["owner"],
+  brain_status: ["owner", "admin"],
+  process_meeting_notes: ["owner", "admin"],
 };
 
 /** Get list of tool names allowed for a given role */

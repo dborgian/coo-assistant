@@ -93,7 +93,7 @@ REGOLE:
 STRUTTURA JSON:
 {
   "meetingTitle": "${meetingTitle}",
-  "attendees": [${attendeeNames ? `"${attendeeNames.split(", ").join('", "')}"` : ""}],
+  "attendees": [${attendeeNames ? attendeeNames.split(", ").map((n) => JSON.stringify(n)).join(", ") : ""}],
   "meetingType": "...",
   "summary": "...",
   "keyDecisions": ["...", "..."],
@@ -439,16 +439,17 @@ export async function checkRecentMeetings(): Promise<void> {
   const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000);
 
   try {
-    const res = await calendar.events.list({
+    const res = await (calendar.events.list as Function)({
       calendarId: "primary",
       timeMin: twoHoursAgo.toISOString(),
       timeMax: now.toISOString(),
       singleEvents: true,
       orderBy: "startTime",
       timeZone: config.TIMEZONE,
+      conferenceDataVersion: 1,
     });
 
-    const events = res.data.items ?? [];
+    const events = (res.data.items ?? []) as any[];
 
     for (const event of events) {
       if (!event.id) continue;

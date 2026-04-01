@@ -4,6 +4,7 @@ import { agent } from "../core/agent.js";
 import { sendOwnerNotification } from "../utils/notify.js";
 import { getGoogleAuth, isGoogleConfigured } from "../core/google-auth.js";
 import type { GoogleAuth } from "../core/google-auth.js";
+import { config } from "../config.js";
 import { db } from "../models/database.js";
 import { messageLogs } from "../models/schema.js";
 import { logger } from "../utils/logger.js";
@@ -187,13 +188,20 @@ export async function sendEmail(
     ? subject
     : `=?UTF-8?B?${Buffer.from(subject, "utf-8").toString("base64")}?=`;
 
+  // Apply assistant From address only for automated emails (no user-specific auth).
+  // When a user's own auth is passed, let Gmail send as their own address (e.g. db@heymyra.ai).
+  const fromAddress = authOverride === undefined && config.EMAIL_FROM_ADDRESS
+    ? config.EMAIL_FROM_ADDRESS
+    : null;
+
   const rawMessage = [
+    fromAddress ? `From: ${fromAddress}` : null,
     `To: ${to}`,
     `Subject: ${encodedSubject}`,
     "Content-Type: text/plain; charset=utf-8",
     "",
     body,
-  ].join("\r\n");
+  ].filter(Boolean).join("\r\n");
 
   const encoded = Buffer.from(rawMessage)
     .toString("base64")
@@ -323,7 +331,8 @@ export async function forwardEmail(
 
     if (attachments.length) {
       // Send as MIME multipart with attachments
-      return await sendMimeWithAttachments(gmail, to, fwdSubject, forwardBody, attachments);
+      const fwdFrom = authOverride === undefined && config.EMAIL_FROM_ADDRESS ? config.EMAIL_FROM_ADDRESS : undefined;
+      return await sendMimeWithAttachments(gmail, to, fwdSubject, forwardBody, attachments, fwdFrom);
     }
 
     // Simple text forward
@@ -368,15 +377,30 @@ export async function replyToEmail(
 
     const replySubject = subject.startsWith("Re:") ? subject : `Re: ${subject}`;
 
-    // For reply-all, include all original recipients
+    // For reply-all, include all original recipients except self
     let toField = from; // Reply to sender
     let ccField = "";
     if (replyAll) {
-      const allRecipients = [originalTo, cc].filter(Boolean).join(", ");
+      let selfEmail = "";
+      try {
+        const profile = await gmail.users.getProfile({ userId: "me" });
+        selfEmail = profile.data.emailAddress ?? "";
+      } catch { /* ignore */ }
+      const allRecipients = [originalTo, cc]
+        .filter(Boolean)
+        .join(", ")
+        .split(/\s*,\s*/)
+        .filter((addr) => selfEmail ? !addr.toLowerCase().includes(selfEmail.toLowerCase()) : true)
+        .join(", ");
       ccField = allRecipients;
     }
 
+    const replyFromAddress = authOverride === undefined && config.EMAIL_FROM_ADDRESS
+      ? config.EMAIL_FROM_ADDRESS
+      : null;
+
     const rawMessage = [
+      replyFromAddress ? `From: ${replyFromAddress}` : null,
       `To: ${toField}`,
       ccField ? `Cc: ${ccField}` : null,
       `Subject: ${replySubject}`,
@@ -409,7 +433,7 @@ export async function replyToEmail(
 function extractPlainText(payload: any): string {
   if (!payload) return "";
   if (payload.mimeType === "text/plain" && payload.body?.data) {
-    return Buffer.from(payload.body.data, "base64").toString("utf-8");
+    return Buffer.from(payload.body.data, "base64url").toString("utf-8");
   }
   if (payload.parts) {
     for (const part of payload.parts) {
@@ -457,6 +481,7 @@ async function sendMimeWithAttachments(
   subject: string,
   body: string,
   attachments: Attachment[],
+  fromAddress?: string,
 ): Promise<boolean> {
   const boundary = `boundary_${Date.now()}`;
 
@@ -481,12 +506,13 @@ async function sendMimeWithAttachments(
   parts.push(`--${boundary}--`);
 
   const rawMessage = [
+    fromAddress ? `From: ${fromAddress}` : null,
     `To: ${to}`,
     `Subject: ${subject}`,
     `Content-Type: multipart/mixed; boundary="${boundary}"`,
     "",
     parts.join("\r\n"),
-  ].join("\r\n");
+  ].filter(Boolean).join("\r\n");
 
   const encoded = Buffer.from(rawMessage)
     .toString("base64")

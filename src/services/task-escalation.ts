@@ -169,7 +169,7 @@ async function executeEscalation(action: EscalationAction): Promise<void> {
       );
       const _notifCh = getNotificationsChannel(); if (_notifCh) {
         await sendSlackMessage(
-          config.SLACK_NOTIFICATIONS_CHANNEL,
+          _notifCh,
           `\u26A0\uFE0F Task overdue da 3+ giorni: "${taskTitle}" (${assignee}). Necessario intervento.`,
         );
       }

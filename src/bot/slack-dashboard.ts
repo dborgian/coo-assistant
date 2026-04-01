@@ -178,7 +178,10 @@ export function registerDashboardActions(slackApp: SlackApp, resolveUser: (slack
   slackApp.action("dash:slack", async ({ ack, body, client }) => {
     await ack();
     const user = await resolveUser((body as any).user.id);
-    if (!canAccessSection("dash:slack", user?.role ?? "viewer")) return;
+    if (!canAccessSection("dash:slack", user?.role ?? "viewer")) {
+      await client.chat.postEphemeral({ channel: (body as any).container.channel_id, user: (body as any).user.id, text: "Non hai i permessi per visualizzare questa sezione." }).catch(() => {});
+      return;
+    }
     try {
       const slackMessages = await db.select().from(messageLogs)
         .where(and(eq(messageLogs.source, "slack"), sql`${messageLogs.receivedAt} > now() - interval '24 hours'`));
@@ -220,7 +223,10 @@ export function registerDashboardActions(slackApp: SlackApp, resolveUser: (slack
   slackApp.action("dash:email", async ({ ack, body, client }) => {
     await ack();
     const user = await resolveUser((body as any).user.id);
-    if (!canAccessSection("dash:email", user?.role ?? "viewer")) return;
+    if (!canAccessSection("dash:email", user?.role ?? "viewer")) {
+      await client.chat.postEphemeral({ channel: (body as any).container.channel_id, user: (body as any).user.id, text: "Non hai i permessi per visualizzare questa sezione." }).catch(() => {});
+      return;
+    }
     try {
       const emails = await getUnreadImportantEmails(5).catch(() => []);
       let text = "*📧 Unread Important Emails*\n━━━━━━━━━━━━━━━━━━━━━\n";
@@ -280,7 +286,10 @@ export function registerDashboardActions(slackApp: SlackApp, resolveUser: (slack
   slackApp.action("dash:notion", async ({ ack, body, client }) => {
     await ack();
     const user = await resolveUser((body as any).user.id);
-    if (!canAccessSection("dash:notion", user?.role ?? "viewer")) return;
+    if (!canAccessSection("dash:notion", user?.role ?? "viewer")) {
+      await client.chat.postEphemeral({ channel: (body as any).container.channel_id, user: (body as any).user.id, text: "Non hai i permessi per visualizzare questa sezione." }).catch(() => {});
+      return;
+    }
     try {
       if (!isNotionConfigured()) {
         await client.chat.update({
@@ -339,7 +348,10 @@ export function registerDashboardActions(slackApp: SlackApp, resolveUser: (slack
   slackApp.action("dash:drive", async ({ ack, body, client }) => {
     await ack();
     const user = await resolveUser((body as any).user.id);
-    if (!canAccessSection("dash:drive", user?.role ?? "viewer")) return;
+    if (!canAccessSection("dash:drive", user?.role ?? "viewer")) {
+      await client.chat.postEphemeral({ channel: (body as any).container.channel_id, user: (body as any).user.id, text: "Non hai i permessi per visualizzare questa sezione." }).catch(() => {});
+      return;
+    }
     try {
       const files = await listDriveFiles(10);
       let text = "*📁 COO Drive Files*\n━━━━━━━━━━━━━━━━━━━━━\n";
@@ -370,7 +382,10 @@ export function registerDashboardActions(slackApp: SlackApp, resolveUser: (slack
   slackApp.action("dash:report", async ({ ack, body, client }) => {
     await ack();
     const user = await resolveUser((body as any).user.id);
-    if (!canAccessSection("dash:report", user?.role ?? "viewer")) return;
+    if (!canAccessSection("dash:report", user?.role ?? "viewer")) {
+      await client.chat.postEphemeral({ channel: (body as any).container.channel_id, user: (body as any).user.id, text: "Non hai i permessi per visualizzare questa sezione." }).catch(() => {});
+      return;
+    }
     try {
       await client.chat.update({
         channel: (body as any).container.channel_id,
@@ -434,7 +449,10 @@ export function registerDashboardActions(slackApp: SlackApp, resolveUser: (slack
   slackApp.action("dash:history", async ({ ack, body, client }) => {
     await ack();
     const user = await resolveUser((body as any).user.id);
-    if (!canAccessSection("dash:history", user?.role ?? "viewer")) return;
+    if (!canAccessSection("dash:history", user?.role ?? "viewer")) {
+      await client.chat.postEphemeral({ channel: (body as any).container.channel_id, user: (body as any).user.id, text: "Non hai i permessi per visualizzare questa sezione." }).catch(() => {});
+      return;
+    }
     try {
       const reports = await db.select().from(dailyReports).orderBy(desc(dailyReports.createdAt)).limit(10);
       let text = "*📜 Report History*\n━━━━━━━━━━━━━━━━━━━━━\n";

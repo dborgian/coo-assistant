@@ -99,7 +99,6 @@ export async function notifyAssigneeAndOwner(
   text: string,
 ): Promise<void> {
   if (!app) return;
-  const mrkdwn = htmlToMrkdwn(text);
 
   if (assignedTo) {
     try {
@@ -109,14 +108,14 @@ export async function notifyAssigneeAndOwner(
         .where(eq(employees.id, assignedTo))
         .limit(1);
       if (emp?.slackMemberId) {
-        await sendSlackDM(emp.slackMemberId, mrkdwn);
+        await sendSlackDM(emp.slackMemberId, text);
       }
     } catch (err) {
       logger.error({ err, assignedTo }, "notifyAssigneeAndOwner: failed to notify assignee");
     }
   }
 
-  await sendOwnerNotification(mrkdwn);
+  await sendOwnerNotification(text);
 }
 
 /** Send a notification to a specific employee by their DB id. Returns true on success. */
