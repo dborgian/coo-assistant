@@ -91,7 +91,7 @@ export async function checkSentimentAlerts(): Promise<void> {
   const weekAgo = new Date();
   weekAgo.setDate(weekAgo.getDate() - 7);
 
-  const activeEmployees = await db.select().from(employees).where(eq(employees.isActive, true));
+  const activeEmployees = await db.select({ id: employees.id, name: employees.name }).from(employees).where(eq(employees.isActive, true));
   const alerts: string[] = [];
 
   for (const emp of activeEmployees) {
@@ -121,7 +121,7 @@ export async function getTeamSentiment(employeeName?: string, days: number = 7):
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - days);
 
-  const activeEmployees = await db.select().from(employees).where(eq(employees.isActive, true));
+  const activeEmployees = await db.select({ id: employees.id, name: employees.name }).from(employees).where(eq(employees.isActive, true));
   const lines: string[] = [];
 
   for (const emp of activeEmployees) {

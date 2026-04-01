@@ -1,6 +1,7 @@
 import { google } from "googleapis";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { getGoogleAuth } from "../core/google-auth.js";
+import { getGoogleAuth, getUserGoogleAuth } from "../core/google-auth.js";
+import type { GoogleAuth } from "../core/google-auth.js";
 import { db } from "../models/database.js";
 import { employees, tasks } from "../models/schema.js";
 import { logger } from "../utils/logger.js";
@@ -19,8 +20,8 @@ export interface CapacitySummary {
   overdueCount: number;
 }
 
-async function getCalendarBusyHours(startDate: Date, endDate: Date): Promise<number> {
-  const auth = getGoogleAuth();
+async function getCalendarBusyHours(startDate: Date, endDate: Date, authOverride?: GoogleAuth | null): Promise<number> {
+  const auth = authOverride ?? getGoogleAuth();
   if (!auth) return 0;
 
   const calendar = google.calendar({ version: "v3", auth });
@@ -50,18 +51,19 @@ export async function getTeamCapacity(): Promise<CapacitySummary[]> {
   const horizon = new Date(now);
   horizon.setDate(horizon.getDate() + FORECAST_DAYS);
 
-  // Subtract meeting hours from total available
-  const meetingHours = await getCalendarBusyHours(now, horizon);
-  const totalAvailableHours = Math.max(1, WORK_HOURS_PER_DAY * FORECAST_DAYS - meetingHours);
-
   const activeEmployees = await db
-    .select()
+    .select({ id: employees.id, name: employees.name, role: employees.role, googleRefreshToken: employees.googleRefreshToken })
     .from(employees)
     .where(eq(employees.isActive, true));
 
   const summaries: CapacitySummary[] = [];
 
   for (const emp of activeEmployees) {
+    // Compute meeting hours using THIS employee's own calendar (fallback to global)
+    const empAuth = emp.googleRefreshToken ? getUserGoogleAuth(emp.googleRefreshToken) : getGoogleAuth();
+    const meetingHours = await getCalendarBusyHours(now, horizon, empAuth);
+    const totalAvailableHours = Math.max(1, WORK_HOURS_PER_DAY * FORECAST_DAYS - meetingHours);
+
     // Count scheduled task hours
     const empTasks = await db
       .select()

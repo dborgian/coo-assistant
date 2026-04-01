@@ -9,7 +9,7 @@ export async function updateCommunicationStats(): Promise<void> {
   const dayStart = new Date(today + "T00:00:00Z");
   const dayEnd = new Date(today + "T23:59:59Z");
 
-  const activeEmployees = await db.select().from(employees).where(eq(employees.isActive, true));
+  const activeEmployees = await db.select({ id: employees.id, name: employees.name, slackMemberId: employees.slackMemberId }).from(employees).where(eq(employees.isActive, true));
 
   for (const emp of activeEmployees) {
     for (const source of ["slack", "telegram"] as const) {
@@ -72,7 +72,7 @@ export async function detectSilentEmployees(): Promise<void> {
   const threeDaysAgo = new Date();
   threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
 
-  const activeEmployees = await db.select().from(employees).where(eq(employees.isActive, true));
+  const activeEmployees = await db.select({ id: employees.id, name: employees.name, slackMemberId: employees.slackMemberId }).from(employees).where(eq(employees.isActive, true));
   const silent: string[] = [];
 
   for (const emp of activeEmployees) {
@@ -110,7 +110,7 @@ export async function getCommunicationOverview(employeeName?: string, days: numb
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - days);
 
-  const activeEmployees = await db.select().from(employees).where(eq(employees.isActive, true));
+  const activeEmployees = await db.select({ id: employees.id, name: employees.name, slackMemberId: employees.slackMemberId }).from(employees).where(eq(employees.isActive, true));
   const lines: string[] = [];
 
   for (const emp of activeEmployees) {

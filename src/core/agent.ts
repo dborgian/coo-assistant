@@ -1041,7 +1041,7 @@ ${JSON.stringify(data, null, 2)}`;
       if (name === "manage_team") {
         const action = input.action as string;
         if (action === "list_employees") {
-          const allEmps = await db.select().from(employees).where(eq(employees.isActive, true));
+          const allEmps = await db.select({ id: employees.id, name: employees.name, role: employees.role, email: employees.email }).from(employees).where(eq(employees.isActive, true));
           if (!allEmps.length) return "Nessun employee attivo nel sistema.";
           return allEmps.map((e) => `- ${e.name} (${e.role ?? "no role"}) — ${e.email ?? "no email"}`).join("\n");
         }
@@ -1318,7 +1318,7 @@ ${JSON.stringify(data, null, 2)}`;
           updates.lastEscalatedAt = null;
         }
         if (input.new_assigned_to) {
-          const [emp] = await db.select().from(employees)
+          const [emp] = await db.select({ id: employees.id }).from(employees)
             .where(sql`${employees.name} ILIKE ${"%" + input.new_assigned_to + "%"}`).limit(1);
           if (emp) updates.assignedTo = emp.id;
           else return `Employee "${input.new_assigned_to}" non trovato. Task non modificato.`;
@@ -1841,7 +1841,7 @@ Genera 5-10 task concreti e actionable.`,
 
     // Admin + Owner: full operational data
     const [allEmployees, allClients, activeTasks] = await Promise.all([
-      db.select().from(employees).where(eq(employees.isActive, true)),
+      db.select({ id: employees.id, name: employees.name, role: employees.role, accessRole: employees.accessRole }).from(employees).where(eq(employees.isActive, true)),
       db.select().from(clients).where(eq(clients.isActive, true)),
       db.select().from(tasks).where(inArray(tasks.status, ["pending", "in_progress"])),
     ]);

@@ -301,7 +301,7 @@ export async function generateDailyReportPdf(data: DailyReportData): Promise<Buf
 }
 
 export async function generateEmployeeReportPdf(name: string, startDate: Date, endDate: Date): Promise<Buffer> {
-  const [emp] = await db.select().from(employees)
+  const [emp] = await db.select({ id: employees.id, name: employees.name, role: employees.role, email: employees.email }).from(employees)
     .where(sql`${employees.name} ILIKE ${"%" + name + "%"}`).limit(1);
   if (!emp) return errPdf(`Employee "${name}" not found.`);
 
@@ -389,7 +389,7 @@ export async function generateWeeklyReportPdf(startDate: Date, endDate: Date): P
   const [allTasks, allMsgs, allEmps, notionData] = await Promise.all([
     db.select().from(tasks),
     db.select().from(messageLogs).where(and(gte(messageLogs.receivedAt, startDate), lte(messageLogs.receivedAt, endDate))),
-    db.select().from(employees).where(eq(employees.isActive, true)),
+    db.select({ id: employees.id, name: employees.name, role: employees.role, email: employees.email }).from(employees).where(eq(employees.isActive, true)),
     isNotionConfigured() ? getNotionWorkspaceSummary().catch(() => null) : Promise.resolve(null),
   ]);
 

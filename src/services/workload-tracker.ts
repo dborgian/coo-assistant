@@ -18,7 +18,7 @@ export async function updateWorkloadMetrics(): Promise<void> {
   const now = new Date();
 
   const activeEmployees = await db
-    .select()
+    .select({ id: employees.id, name: employees.name })
     .from(employees)
     .where(eq(employees.isActive, true));
 
@@ -123,7 +123,7 @@ export async function getTeamWorkload(): Promise<WorkloadSummary[]> {
   const today = new Date().toISOString().split("T")[0];
 
   const activeEmployees = await db
-    .select()
+    .select({ id: employees.id, name: employees.name })
     .from(employees)
     .where(eq(employees.isActive, true));
 

@@ -131,7 +131,7 @@ export async function getActivityByDateRange(range: DateRange) {
 }
 
 export async function getEmployeeActivity(employeeId: string, range: DateRange) {
-  const [emp] = await db.select().from(employees).where(eq(employees.id, employeeId)).limit(1);
+  const [emp] = await db.select({ id: employees.id, name: employees.name, role: employees.role, email: employees.email }).from(employees).where(eq(employees.id, employeeId)).limit(1);
   if (!emp) return null;
 
   const [empTasks, empMessages] = await Promise.all([

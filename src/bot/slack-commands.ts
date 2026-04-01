@@ -417,7 +417,7 @@ export function registerSlashCommands(slackApp: SlackApp, resolveUser: ResolveFn
       if (args.length < 2 || !args[0]) { await respond("Uso: /coo-remind [persona] [descrizione task]\nEsempio: /coo-remind John Invia il report Q1"); return; }
       const personName = args[0];
       const taskDesc = args.slice(1).join(" ");
-      const [employee] = await db.select().from(employees).where(sql`${employees.name} ILIKE ${"%" + personName + "%"}`).limit(1);
+      const [employee] = await db.select({ id: employees.id, email: employees.email }).from(employees).where(sql`${employees.name} ILIKE ${"%" + personName + "%"}`).limit(1);
       await db.insert(tasks).values({
         title: `Reminder: ${taskDesc}`,
         description: `Reminder per ${personName}: ${taskDesc}`,

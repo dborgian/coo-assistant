@@ -2,7 +2,8 @@ import { google } from "googleapis";
 import { and, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import { config } from "../config.js";
 import { sendOwnerNotification } from "../utils/notify.js";
-import { getGoogleAuth, isGoogleConfigured } from "../core/google-auth.js";
+import { getGoogleAuth, getUserGoogleAuth, isGoogleConfigured } from "../core/google-auth.js";
+import type { GoogleAuth } from "../core/google-auth.js";
 import { db } from "../models/database.js";
 import { employees, tasks } from "../models/schema.js";
 import { withRetry } from "../utils/resilience.js";
@@ -43,8 +44,8 @@ async function checkDependenciesResolved(blockedBy: string): Promise<boolean> {
   }
 }
 
-async function getCalendarBusySlots(startDate: Date, endDate: Date, calendarId: string = "primary"): Promise<TimeSlot[]> {
-  const auth = getGoogleAuth();
+async function getCalendarBusySlots(startDate: Date, endDate: Date, calendarId: string = "primary", authOverride?: GoogleAuth | null): Promise<TimeSlot[]> {
+  const auth = authOverride ?? getGoogleAuth();
   if (!auth) return [];
 
   const calendar = google.calendar({ version: "v3", auth });
@@ -140,8 +141,9 @@ async function createCalendarEvent(
   end: Date,
   calendarId: string = "primary",
   description?: string,
+  authOverride?: GoogleAuth | null,
 ): Promise<string | null> {
-  const auth = getGoogleAuth();
+  const auth = authOverride ?? getGoogleAuth();
   if (!auth) return null;
 
   const calendar = google.calendar({ version: "v3", auth });
@@ -163,8 +165,8 @@ async function createCalendarEvent(
   }
 }
 
-async function deleteCalendarEvent(eventId: string, calendarId: string = "primary"): Promise<void> {
-  const auth = getGoogleAuth();
+async function deleteCalendarEvent(eventId: string, calendarId: string = "primary", authOverride?: GoogleAuth | null): Promise<void> {
+  const auth = authOverride ?? getGoogleAuth();
   if (!auth) return;
 
   const calendar = google.calendar({ version: "v3", auth });
@@ -225,23 +227,30 @@ export async function autoScheduleTasks(): Promise<void> {
     const totalDuration = task.estimatedMinutes ?? 60;
     const deadline = new Date(task.dueDate!);
 
-    // Resolve calendar: use assignee's Google email if available (Google Workspace)
+    // Resolve calendar and per-employee auth
     let calendarId = "primary";
+    let taskAuth: GoogleAuth | null = getGoogleAuth();
     if (task.assignedTo) {
       const [emp] = await db
-        .select({ googleEmail: employees.googleEmail, email: employees.email })
+        .select({ googleEmail: employees.googleEmail, email: employees.email, googleRefreshToken: employees.googleRefreshToken })
         .from(employees)
         .where(eq(employees.id, task.assignedTo))
         .limit(1);
-      if (emp?.googleEmail) calendarId = emp.googleEmail;
-      else if (emp?.email?.includes("@") && !emp.email.includes("test")) calendarId = emp.email;
+      if (emp?.googleRefreshToken) {
+        taskAuth = getUserGoogleAuth(emp.googleRefreshToken);
+        calendarId = "primary"; // use employee's own primary calendar via their auth
+      } else if (emp?.googleEmail) {
+        calendarId = emp.googleEmail; // delegate via owner auth (Google Workspace)
+      } else if (emp?.email?.includes("@") && !emp.email.includes("test")) {
+        calendarId = emp.email;
+      }
     }
 
-    // Fetch busy slots for this employee's calendar
-    const empBusySlots = calendarId !== "primary"
-      ? await getCalendarBusySlots(now, schedulingHorizon, calendarId)
+    // Fetch busy slots for this employee's calendar using their own auth
+    const empBusySlots = calendarId !== "primary" || task.assignedTo
+      ? await getCalendarBusySlots(now, schedulingHorizon, calendarId, taskAuth)
       : scheduledEvents;
-    const empScheduled: TimeSlot[] = calendarId !== "primary" ? [...empBusySlots] : scheduledEvents;
+    const empScheduled: TimeSlot[] = (calendarId !== "primary" || task.assignedTo) ? [...empBusySlots] : scheduledEvents;
 
     // Task chunking: break large tasks into 90-min blocks
     if (totalDuration > MAX_CHUNK_MINUTES * 1.5) {
@@ -258,7 +267,7 @@ export async function autoScheduleTasks(): Promise<void> {
 
         const slot = chunkSlots[0];
         const eventId = await withRetry(
-          () => createCalendarEvent(`${task.title} (${c + 1}/${chunks})`, slot.start, slot.end, calendarId, task.description ?? undefined),
+          () => createCalendarEvent(`${task.title} (${c + 1}/${chunks})`, slot.start, slot.end, calendarId, task.description ?? undefined, taskAuth),
           "calendar-create",
         ).catch(() => null);
 
@@ -298,7 +307,7 @@ export async function autoScheduleTasks(): Promise<void> {
 
     const slot = freeSlots[0];
     const eventId = await withRetry(
-      () => createCalendarEvent(task.title, slot.start, slot.end, calendarId, task.description ?? undefined),
+      () => createCalendarEvent(task.title, slot.start, slot.end, calendarId, task.description ?? undefined, taskAuth),
       "calendar-create",
     ).catch(() => null);
 

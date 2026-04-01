@@ -98,7 +98,7 @@ export async function discoverNotionUsers(): Promise<void> {
   const client = getClient();
   try {
     const response = await client.users.list({});
-    const allEmployees = await db.select().from(employees);
+    const allEmployees = await db.select({ id: employees.id, name: employees.name, email: employees.email, notionUserId: employees.notionUserId }).from(employees);
     let linked = 0;
 
     for (const user of response.results) {
@@ -126,7 +126,7 @@ export async function discoverNotionUsers(): Promise<void> {
 // --- Helper: resolve employee name → Notion user ID ---
 
 async function resolveNotionUserId(name: string): Promise<string | null> {
-  const emp = await db.select().from(employees)
+  const emp = await db.select({ notionUserId: employees.notionUserId }).from(employees)
     .where(ilike(employees.name, `%${name}%`))
     .limit(1);
   return emp[0]?.notionUserId ?? null;

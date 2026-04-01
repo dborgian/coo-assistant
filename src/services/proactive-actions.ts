@@ -13,7 +13,7 @@ export async function runProactiveCheck(): Promise<void> {
   // Gather operational context
   const [activeTasks, allEmployees, workload] = await Promise.all([
     db.select().from(tasks).where(inArray(tasks.status, ["pending", "in_progress"])),
-    db.select().from(employees).where(eq(employees.isActive, true)),
+    db.select({ id: employees.id, name: employees.name, role: employees.role }).from(employees).where(eq(employees.isActive, true)),
     getTeamWorkload().catch(() => []),
   ]);
 
