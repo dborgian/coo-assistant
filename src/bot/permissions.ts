@@ -60,6 +60,13 @@ export const TOOL_PERMISSIONS: Record<string, AccessRole[]> = {
   resolve_decision: ["owner"],
   brain_status: ["owner", "admin"],
   process_meeting_notes: ["owner", "admin"],
+
+  // VISIBILITY + CONTROL (Phase 2B/2C)
+  get_health_score: ["owner", "admin"],
+  get_recap: ["owner", "admin"],
+  manage_notifications: ["owner", "admin", "viewer"],
+  get_team_overview: ["owner", "admin"],
+  get_audit_log: ["owner", "admin"],
 };
 
 /** Get list of tool names allowed for a given role */

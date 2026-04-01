@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { and, desc, eq, gte, ilike, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, gte, ilike, inArray, lt, sql } from "drizzle-orm";
 import { config } from "../config.js";
 import { db } from "../models/database.js";
 import { clients, dailyReports, employees, intelligenceEvents, messageLogs, tasks } from "../models/schema.js";
@@ -15,7 +15,7 @@ import type { GoogleAuth } from "./google-auth.js";
 import { generateDailyReportPdf, generateEmployeeReportPdf, generateWeeklyReportPdf, type DailyReportData } from "../services/pdf-generator.js";
 import { sendSlackMessage, getNotificationsChannel } from "../bot/slack-monitor.js";
 import { sendEmployeeNotification } from "../utils/notify.js";
-import { getTeamWorkload } from "../services/workload-tracker.js";
+import { getTeamWorkload, type WorkloadSummary } from "../services/workload-tracker.js";
 import { getTeamCapacity, suggestAssignment } from "../services/capacity-planner.js";
 import { rescheduleTask, unscheduleTask } from "../services/auto-scheduler.js";
 import { deleteCalendarEvent } from "../services/calendar-sync.js";
@@ -101,6 +101,8 @@ AZIONI CHE PUOI ESEGUIRE (usa i tools quando l'utente lo chiede):
 - Vedere l'health score operativo con breakdown dettagliato (get_health_score)
 - Generare un recap AI delle ultime N ore di attivita' (get_recap)
 - Gestire le preferenze notifiche personali — silenziare/riattivare tipi (manage_notifications)
+- Vedere il log delle azioni autonome del bot (get_audit_log)
+- Vedere una panoramica completa del team con workload, task attivi e scaduti (get_team_overview)
 - Analizzare il morale e sentiment del team (get_team_sentiment)
 - Vedere pattern di comunicazione, tempi di risposta, employee silenziosi (get_communication_patterns)
 - Consultare la knowledge base aziendale (query_knowledge_base)
@@ -523,6 +525,15 @@ ${JSON.stringify(data, null, 2)}`;
       },
     },
     {
+      name: "get_team_overview",
+      description: "Get a comprehensive team overview with workload percentage, active task counts, and overdue tasks per employee. Use when user asks: 'com\\'e\\' il team?', 'overview del team', 'stato dei dipendenti', 'chi ha piu\\' lavoro?', 'team overview', '/coo-team'.",
+      input_schema: {
+        type: "object" as const,
+        properties: {},
+        required: [],
+      },
+    },
+    {
       name: "set_task_dependency",
       description: "Set a dependency between tasks. Task B will be blocked until Task A is completed. Use when user says 'B depends on A' or 'do A before B'.",
       input_schema: {
@@ -841,6 +852,17 @@ ${JSON.stringify(data, null, 2)}`;
         type: "object" as const,
         properties: {
           hours: { type: "number", description: "Hours to look back (default 24, max 72)" },
+        },
+        required: [],
+      },
+    },
+    {
+      name: "get_audit_log",
+      description: "Get the audit log of recent autonomous actions taken by the bot: emails sent, tasks created, escalations triggered, etc. Use when user asks: 'cosa hai fatto?', 'audit', 'azioni autonome', 'log del bot', 'mostra le azioni recenti', '/coo-audit'.",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          limit: { type: "number", description: "Number of recent actions to show (default 20, max 50)" },
         },
         required: [],
       },
@@ -1574,6 +1596,31 @@ ${JSON.stringify(data, null, 2)}`;
         }).join("\n");
       }
 
+      if (name === "get_team_overview") {
+        const now = new Date();
+        const [teamEmployees, workload] = await Promise.all([
+          db.select({ id: employees.id, name: employees.name, role: employees.role })
+            .from(employees).where(eq(employees.isActive, true)),
+          getTeamWorkload().catch(() => [] as WorkloadSummary[]),
+        ]);
+        if (!teamEmployees.length) return "Nessun dipendente attivo.";
+        const empTasks = await Promise.all(teamEmployees.map(async (emp) => {
+          const [activeRow] = await db.select({ count: sql<number>`count(*)` }).from(tasks)
+            .where(and(eq(tasks.assignedTo, emp.id), inArray(tasks.status, ["pending", "in_progress"])));
+          const [overdueRow] = await db.select({ count: sql<number>`count(*)` }).from(tasks)
+            .where(and(eq(tasks.assignedTo, emp.id), inArray(tasks.status, ["pending", "in_progress"]), lt(tasks.dueDate, now)));
+          return { id: emp.id, name: emp.name, role: emp.role, active: Number(activeRow?.count ?? 0), overdue: Number(overdueRow?.count ?? 0) };
+        }));
+        const workloadMap = new Map(workload.map((w) => [w.employeeName, w]));
+        const lines = empTasks.map((e) => {
+          const w = workloadMap.get(e.name);
+          const pct = w ? `${Math.round(w.workloadScore * 100)}%` : "—";
+          const overdueNote = e.overdue ? ` | ${e.overdue} scaduti` : "";
+          return `• ${e.name} (${e.role}): ${pct} workload, ${e.active} task attivi${overdueNote}`;
+        });
+        return `Team Overview — ${now.toLocaleDateString("it-IT")}\n${lines.join("\n")}`;
+      }
+
       if (name === "set_task_dependency") {
         const [dependent] = await db.select().from(tasks)
           .where(sql`${tasks.title} ILIKE ${"%" + input.task_title + "%"}`).limit(1);
@@ -1985,6 +2032,17 @@ Genera 5-10 task concreti e actionable.`,
           return `🔔 Notifiche \`${input.type}\` riattivate.`;
         }
         return "Azione non valida. Usa: list, mute, unmute.";
+      }
+
+      if (name === "get_audit_log") {
+        const limit = Math.min(Math.max(1, input.limit ?? 20), 50);
+        const actions = await getRecentBotActions(limit);
+        if (!actions.length) return "Nessuna azione autonoma registrata.";
+        const lines = actions.map((a) => {
+          const ts = a.detectedAt ? new Date(a.detectedAt).toLocaleString("it-IT", { timeZone: config.TIMEZONE || "Europe/Rome", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—";
+          return `[${ts}] [${a.actionType}] ${a.description}`;
+        });
+        return `Azioni autonome recenti (${actions.length}):\n${lines.join("\n")}`;
       }
 
       return `Tool "${name}" non riconosciuto.`;
