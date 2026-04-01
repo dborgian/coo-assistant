@@ -212,3 +212,15 @@ export const userMemory = pgTable("user_memory", {
   index("idx_user_memory_chat").on(t.chatId),
   uniqueIndex("idx_user_memory_chat_key").on(t.chatId, t.category, t.key),
 ]);
+
+export const conversationSummaries = pgTable("conversation_summaries", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  chatId: text("chat_id").notNull(),
+  summary: text("summary").notNull(),
+  messageCount: integer("message_count").default(0),
+  tokenEstimate: integer("token_estimate").default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  uniqueIndex("idx_conv_summaries_chat").on(t.chatId),
+]);

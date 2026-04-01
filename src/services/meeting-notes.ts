@@ -8,7 +8,7 @@ import { getGoogleAuth, isGoogleConfigured } from "../core/google-auth.js";
 import { sendEmail, getEmailBody, markEmailAsRead } from "./email-manager.js";
 import { createNotionMeetingAction } from "./notion-sync.js";
 import { readGoogleDocText } from "./google-docs-manager.js";
-import { sendSlackMessage, getNotificationsChannel } from "../bot/slack-monitor.js";
+import { sendSlackMessage, sendSlackBlocks, getNotificationsChannel } from "../bot/slack-monitor.js";
 import { feedMeetingToBrain, extractAndSaveFacts } from "./company-brain.js";
 import { logger } from "../utils/logger.js";
 
@@ -512,29 +512,58 @@ export async function checkRecentMeetings(): Promise<void> {
         await sendMeetingEmail(attendeeEmails, title, dateStr, parsed);
       }
 
-      // Create Notion action items in Meeting Actions DB
-      if (config.NOTION_MEETING_ACTIONS_DATABASE_ID) {
-        for (const item of parsed.actionItems) {
-          await createNotionMeetingAction(item.title, {
-            meetingTitle: title,
-            meetingDate: dateISO,
-            assignee: item.assignee ?? undefined,
-            dueDate: item.dueDate ?? undefined,
-            notes: `Meeting del ${dateStr} — ${parsed.summary}`,
-          }).catch((err) => logger.warn({ err, item: item.title }, "Failed to create Notion meeting action"));
-        }
-      }
+      // Store action items pending human approval — do NOT auto-create on Notion
+      await db.insert(intelligenceEvents).values({
+        type: "meeting_pending",
+        content: `${title}: ${parsed.summary.slice(0, 200)}`,
+        status: "pending_review",
+        metadata: {
+          calendarEventId: event.id,
+          title,
+          date: dateISO,
+          actionItems: parsed.actionItems,
+        },
+      }).catch((err) => logger.warn({ err }, "Failed to insert meeting_pending"));
 
-      // Slack notification summary
+      // Send Block Kit message with approval buttons
       const notifCh = getNotificationsChannel();
       if (notifCh) {
-        const actionsList = parsed.actionItems.length
-          ? parsed.actionItems.map((a) => `• ${a.title}${a.assignee ? ` (${a.assignee})` : ""}`).join("\n")
-          : "_Nessun action item_";
-        await sendSlackMessage(
-          notifCh,
-          `📋 *Meeting: ${title}* — ${dateStr}\n_${attendeeNames}_\n\n*Riassunto:* ${parsed.summary}\n\n*Action items:*\n${actionsList}`,
-        ).catch(() => {});
+        if (parsed.actionItems.length > 0) {
+          const priorityEmoji: Record<string, string> = { high: "🔴", medium: "🟡", low: "🟢" };
+          const actionsList = parsed.actionItems
+            .map((a) => `${priorityEmoji[a.priority ?? "medium"] ?? "•"} ${a.title}${a.assignee ? ` (${a.assignee})` : ""}`)
+            .join("\n");
+          await sendSlackBlocks(notifCh, `Meeting processato: ${title}`, [
+            {
+              type: "section",
+              text: {
+                type: "mrkdwn",
+                text: `📋 *${title}* — ${dateStr}\n_${attendeeNames}_\n\n*Riassunto:* ${parsed.summary}\n\n*Action items estratti (${parsed.actionItems.length}):*\n${actionsList}`,
+              },
+            },
+            {
+              type: "actions",
+              elements: [
+                {
+                  type: "button",
+                  action_id: `meet_approve_${event.id}`,
+                  text: { type: "plain_text", text: "Crea su Notion" },
+                  style: "primary",
+                },
+                {
+                  type: "button",
+                  action_id: `meet_skip_${event.id}`,
+                  text: { type: "plain_text", text: "Salta" },
+                },
+              ],
+            },
+          ]).catch(() => {});
+        } else {
+          await sendSlackMessage(
+            notifCh,
+            `📋 *${title}* — ${dateStr}\n_${attendeeNames}_\n\n*Riassunto:* ${parsed.summary}\n_Nessun action item identificato._`,
+          ).catch(() => {});
+        }
       }
 
       // Feed brain (async — don't block)

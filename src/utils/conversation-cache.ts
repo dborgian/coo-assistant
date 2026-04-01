@@ -9,6 +9,7 @@
 import { Redis } from "ioredis";
 import { config } from "../config.js";
 import { logger } from "./logger.js";
+import { deleteConversationSummary } from "../services/context-compressor.js";
 
 const TTL_SECONDS = 1800; // 30 minutes
 const MAX_ENTRIES = 10;   // 5 user/assistant pairs
@@ -90,9 +91,10 @@ export async function addToConversation(chatId: string, role: "user" | "assistan
 export async function clearConversation(chatId: string): Promise<void> {
   if (redis) {
     await redis.del(`${KEY_PREFIX}${chatId}`).catch((e) => logger.error({ err: e, chatId }, "Redis del failed"));
-    return;
+    // fall through — always clear memCache too
   }
   memCache.delete(chatId);
+  await deleteConversationSummary(chatId);
 }
 
 /** Expose raw Redis client for services that need direct access (e.g. company-brain). */

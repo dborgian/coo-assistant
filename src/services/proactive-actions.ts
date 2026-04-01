@@ -6,6 +6,7 @@ import { getTodayEvents } from "./calendar-sync.js";
 import { getTeamWorkload } from "./workload-tracker.js";
 import { sendOwnerNotification } from "../utils/notify.js";
 import { logger } from "../utils/logger.js";
+import { cleanupOldSummaries } from "./context-compressor.js";
 
 export async function runProactiveCheck(): Promise<void> {
   const now = new Date();
@@ -166,4 +167,9 @@ export async function generateWeeklyDigest(): Promise<void> {
   } catch (err) {
     logger.error({ err }, "Failed to send weekly digest");
   }
+
+  // Cleanup stale conversation summaries older than 30 days
+  await cleanupOldSummaries(90).catch((err) =>
+    logger.error({ err }, "Failed to clean up conversation summaries"),
+  );
 }

@@ -14,6 +14,7 @@ import type { AccessRole } from "./auth-types.js";
 import { registerSlashCommands } from "./slack-commands.js";
 import { registerDashboardActions } from "./slack-dashboard.js";
 import { registerOAuthCommands } from "./onboarding.js";
+import { registerMeetingApprovals } from "./meeting-approvals.js";
 
 let slackApp: SlackApp | null = null;
 let slackBotUserId: string | null = null;
@@ -261,6 +262,7 @@ export async function startSlackMonitor(): Promise<boolean> {
   registerSlashCommands(slackApp, resolveSlackUser);
   registerDashboardActions(slackApp, resolveSlackUser);
   registerOAuthCommands(slackApp);
+  registerMeetingApprovals(slackApp);
 
   // Auto-discover channels the bot is a member of
   try {
@@ -663,6 +665,17 @@ export async function sendSlackTaskNotification(
     return true;
   } catch (err) {
     logger.error({ err, channel: channelId }, "Failed to send Slack task notification");
+    return false;
+  }
+}
+
+export async function sendSlackBlocks(channelId: string, text: string, blocks: unknown[]): Promise<boolean> {
+  if (!slackApp) return false;
+  try {
+    await (slackApp.client.chat.postMessage as Function)({ channel: channelId, text, blocks });
+    return true;
+  } catch (err) {
+    logger.error({ err, channel: channelId }, "Failed to send Slack blocks");
     return false;
   }
 }

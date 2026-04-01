@@ -13,7 +13,7 @@ export async function generateAndSendAgendas(): Promise<void> {
   const now = new Date();
 
   const activeEmployees = await db
-    .select()
+    .select({ id: employees.id, name: employees.name, role: employees.role, email: employees.email, googleEmail: employees.googleEmail, googleRefreshToken: employees.googleRefreshToken })
     .from(employees)
     .where(eq(employees.isActive, true));
 

@@ -4,7 +4,7 @@ import { config } from "../config.js";
 import * as schema from "./schema.js";
 import { logger } from "../utils/logger.js";
 
-const client = postgres(config.SUPABASE_DB_URL);
+const client = postgres(config.SUPABASE_DB_URL, { max: 5 });
 export const db = drizzle(client, { schema });
 
 export async function initDb(): Promise<void> {

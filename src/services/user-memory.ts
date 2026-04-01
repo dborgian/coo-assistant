@@ -19,12 +19,13 @@ import { and, eq, lt, sql } from "drizzle-orm";
 import { db } from "../models/database.js";
 import { userMemory } from "../models/schema.js";
 import { logger } from "../utils/logger.js";
+import { getRedis } from "../utils/conversation-cache.js";
 
 const extractor = new Anthropic();
 
-// Rate-limit: avoid Haiku API call if same chatId was extracted less than 5 min ago
+const EXTRACTION_TTL_SECONDS = 300; // 5 minutes
+// In-memory fallback when Redis is unavailable (resets on restart — acceptable)
 const lastExtractionAt = new Map<string, number>();
-const EXTRACTION_MIN_INTERVAL_MS = 5 * 60 * 1000;
 
 export interface MemoryEntry {
   category: string;
@@ -63,11 +64,28 @@ export function formatMemoriesForPrompt(memories: MemoryEntry[]): string {
 
 /** Uses claude-haiku to extract preferences/patterns and upserts them into DB. */
 export async function extractAndSaveMemories(chatId: string, query: string, response: string): Promise<void> {
-  // Skip trivial exchanges and rate-limit per chatId
+  // Skip trivial exchanges
   if ((query + response).length < 80) return;
-  const now = Date.now();
-  if (now - (lastExtractionAt.get(chatId) ?? 0) < EXTRACTION_MIN_INTERVAL_MS) return;
-  lastExtractionAt.set(chatId, now);
+
+  // Rate-limit: skip if extracted in the last 5 min (Redis-persistent; falls back to in-memory Map)
+  const redis = getRedis();
+  const rateKey = `memext:${chatId}`;
+  if (redis) {
+    try {
+      const exists = await redis.exists(rateKey);
+      if (exists) return;
+      await redis.set(rateKey, "1", "EX", EXTRACTION_TTL_SECONDS);
+    } catch {
+      // Redis error — fall through to in-memory fallback
+      const now = Date.now();
+      if (now - (lastExtractionAt.get(chatId) ?? 0) < EXTRACTION_TTL_SECONDS * 1000) return;
+      lastExtractionAt.set(chatId, now);
+    }
+  } else {
+    const now = Date.now();
+    if (now - (lastExtractionAt.get(chatId) ?? 0) < EXTRACTION_TTL_SECONDS * 1000) return;
+    lastExtractionAt.set(chatId, now);
+  }
   try {
     const result = await extractor.messages.create({
       model: "claude-haiku-4-5-20251001",

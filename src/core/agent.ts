@@ -2,7 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { and, desc, eq, gte, ilike, inArray, sql } from "drizzle-orm";
 import { config } from "../config.js";
 import { db } from "../models/database.js";
-import { clients, dailyReports, employees, messageLogs, tasks } from "../models/schema.js";
+import { clients, dailyReports, employees, intelligenceEvents, messageLogs, tasks } from "../models/schema.js";
 import { logger } from "../utils/logger.js";
 import { getTodayEvents, getTeamEvents } from "../services/calendar-sync.js";
 import { sendTieredNotification, getTargetLevel } from "../services/task-reminder.js";
@@ -20,7 +20,7 @@ import { rescheduleTask, unscheduleTask } from "../services/auto-scheduler.js";
 import { deleteCalendarEvent } from "../services/calendar-sync.js";
 import { createGoogleTask, completeGoogleTask, updateGoogleTask, deleteGoogleTask } from "../services/google-tasks-sync.js";
 import { getProjectETA } from "../services/project-eta.js";
-import { addNotionComment, createNotionProject, updateNotionTaskProperties, archiveNotionPage } from "../services/notion-sync.js";
+import { addNotionComment, createNotionProject, createNotionMeetingAction, updateNotionTaskProperties, archiveNotionPage } from "../services/notion-sync.js";
 import { getCommitments } from "../services/commitment-tracker.js";
 import { getTeamSentiment } from "../services/sentiment-analyzer.js";
 import { getCommunicationOverview } from "../services/communication-patterns.js";
@@ -36,6 +36,7 @@ import type { AccessRole } from "../bot/auth-types.js";
 import { getAllowedToolNames } from "../bot/permissions.js";
 import { getConversationHistory, addToConversation } from "../utils/conversation-cache.js";
 import { getUserMemories, formatMemoriesForPrompt, extractAndSaveMemories } from "../services/user-memory.js";
+import { compressConversationIfNeeded } from "../services/context-compressor.js";
 
 export interface AgentResponse {
   text: string;
@@ -114,6 +115,7 @@ GESTIONE AMBIGUITA':
 - Se un tool restituisce "Trovati N task corrispondenti", NON proseguire: chiedi all'utente quale intende.
 - Se un tool restituisce un errore di employee non trovato, mostra la lista dei dipendenti disponibili e chiedi di specificare.
 - Se la data e' ambigua (es. "venerdì", "la prossima settimana"), usa current_datetime dal context per calcolarla esattamente.
+- REGOLA FERREA create_task / notion_action create_task: se mancano priority O due_date O assignee, NON impostare confirmed=true. Il tool restituira' una lista dei campi mancanti — mostrala all'utente e chiedi conferma. Solo dopo risposta esplicita dell'utente chiama il tool con confirmed=true (e con i valori specificati, se li ha forniti).
 
 ESEMPI:
 - Utente: "crea task report" → se manca l'assignee o la scadenza, chiedi: "A chi assegno il task e entro quando?"
@@ -125,6 +127,12 @@ SYNC NOTION BIDIREZIONALE:
 - Task completati/cancellati qui aggiornano lo status su Notion
 - Task creati su Notion vengono importati qui automaticamente
 - Cambi di priorita/deadline si sincronizzano in entrambe le direzioni
+
+SEZIONI NOTION DISPONIBILI (usa il parametro section nel tool notion_action):
+- "tasks" (default): database task principale
+- "action_items": database meeting action items — usa quando l'utente dice "action items", "azioni meeting", "nella sezione action items"
+- "projects": database progetti — usa quando l'utente dice "progetto", "project", "nella sezione progetti"
+Se l'utente specifica una sezione Notion, DEVI passare il parametro section corretto.
 - Puoi aggiungere note ai task che saranno visibili su Notion
 
 Quando l'utente chiede "manda un reminder a X" o "crea un task per Y", USA IL TOOL. Non simulare l'azione.
@@ -311,6 +319,7 @@ ${JSON.stringify(data, null, 2)}`;
           assigned_to_name: { type: "string", description: "Employee name to assign the task to (optional)" },
           due_date: { type: "string", description: "Due date in YYYY-MM-DD or YYYY-MM-DDTHH:mm format (e.g. 2026-03-26T16:00). Always include time if the user specifies it." },
           timezone: { type: "string", description: "IANA timezone for due_date if the user specifies a timezone different from their default (e.g. 'Europe/Rome', 'America/New_York'). Omit if the user's default timezone applies." },
+          confirmed: { type: "boolean", description: "Set to true ONLY after the user has explicitly confirmed they want to create the task with the current info. If priority, due_date, or assigned_to_name are missing, first show a summary of missing fields and ask the user to confirm or provide them." },
         },
         required: ["title"],
       },
@@ -397,6 +406,8 @@ ${JSON.stringify(data, null, 2)}`;
           due_date: { type: "string", description: "Due date in YYYY-MM-DD or YYYY-MM-DDTHH:mm format (e.g. 2026-03-30T18:00). Always include time if the user specifies or implies one (e.g. 'tra 3 ore', 'alle 14')." },
           assignee: { type: "string", description: "Employee name to assign the task to" },
           timezone: { type: "string", description: "IANA timezone for due_date if the user specifies a timezone different from their default (e.g. 'Europe/Rome', 'America/New_York'). Omit if the user's default timezone applies." },
+          section: { type: "string", enum: ["tasks", "action_items", "projects"], description: "Notion database/section to target for create_task. 'tasks' (default) = main tasks DB, 'action_items' = meeting action items DB (use when user says 'action items', 'azioni meeting', 'nella sezione action items'), 'projects' = projects DB (use when user says 'progetto', 'project')." },
+          confirmed: { type: "boolean", description: "Set to true ONLY after the user has explicitly confirmed they want to create the task with the current info. If priority, due_date, or assignee are missing, first show a summary and ask the user to confirm or provide them." },
         },
         required: ["action"],
       },
@@ -812,6 +823,17 @@ ${JSON.stringify(data, null, 2)}`;
   private async executeTool(name: string, input: Record<string, any>, userAuth?: GoogleAuth | null, userTz?: string, collectedFiles?: Array<{ buffer: Buffer; filename: string }>): Promise<string> {
     try {
       if (name === "create_task") {
+        // Check for missing key fields — return a preview and ask user to confirm before creating
+        const missingFields: string[] = [];
+        if (!input.priority) missingFields.push("priorita' (default: media)");
+        if (!input.due_date) missingFields.push("scadenza (default: nessuna)");
+        if (!input.assigned_to_name) missingFields.push("assegnatario (default: nessuno)");
+        if (missingFields.length >= 2 && !input.confirmed) {
+          return `Prima di creare il task "${input.title}", mancano alcune informazioni:\n` +
+            missingFields.map((f) => `- ${f}`).join("\n") +
+            `\n\nVuoi procedere con i default o preferisci specificarli?`;
+        }
+
         let assignedTo: string | null = null;
         if (input.assigned_to_name) {
           const [emp] = await db.select({ id: employees.id }).from(employees)
@@ -1073,9 +1095,32 @@ ${JSON.stringify(data, null, 2)}`;
         }
         if (action === "create_task") {
           if (!input.title) return "Titolo richiesto per creare un task su Notion.";
-          const url = await createNotionTask(input.title, {
-            status: input.status, priority: input.priority, dueDate: input.due_date, assignee: input.assignee, description: input.description,
-          });
+
+          // Check for missing key fields — ask user to confirm before creating
+          const notionMissingFields: string[] = [];
+          if (!input.priority) notionMissingFields.push("priorita' (default: media)");
+          if (!input.due_date) notionMissingFields.push("scadenza (default: nessuna)");
+          if (!input.assignee) notionMissingFields.push("assegnatario (default: nessuno)");
+          if (notionMissingFields.length >= 2 && !input.confirmed) {
+            return `Prima di creare il task "${input.title}" su Notion, mancano alcune informazioni:\n` +
+              notionMissingFields.map((f) => `- ${f}`).join("\n") +
+              `\n\nVuoi procedere con i default o preferisci specificarli?`;
+          }
+
+          // Route to the correct Notion database based on section
+          const section = (input.section as string | undefined) ?? "tasks";
+          let url: string | null = null;
+          if (section === "action_items") {
+            url = await createNotionMeetingAction(input.title, {
+              assignee: input.assignee, dueDate: input.due_date, notes: input.description,
+            });
+          } else if (section === "projects") {
+            url = await createNotionProject(input.title);
+          } else {
+            url = await createNotionTask(input.title, {
+              status: input.status, priority: input.priority, dueDate: input.due_date, assignee: input.assignee, description: input.description,
+            });
+          }
 
           // Mirror in internal DB so reminders/escalation/notifications work
           let notionAssignedTo: string | null = null;
@@ -1929,14 +1974,39 @@ Genera 5-10 task concreti e actionable.`,
 
     // --- Tool use loop ---
     const userInfo = userName ? `[Messaggio da: ${userName} (${userRole})]\n` : "";
-    const contextStr = `${userInfo}Context:\n\`\`\`json\n${JSON.stringify(context, null, 2)}\n\`\`\`\n\n${query}`;
 
-    // Build messages: prepend conversation history for multi-turn disambiguation
+    // Auto-surface open commitments so Claude is proactively aware without being asked
+    let commitmentSuffix = "";
+    try {
+      const openCommits = await db
+        .select({ content: intelligenceEvents.content, channel: intelligenceEvents.channel })
+        .from(intelligenceEvents)
+        .where(and(eq(intelligenceEvents.type, "commitment"), eq(intelligenceEvents.status, "open")))
+        .limit(3);
+      if (openCommits.length) {
+        commitmentSuffix = `\n\n\u26A0\uFE0F COMMITMENT APERTI (${openCommits.length}):\n` +
+          openCommits.map((c) => `- "${c.content.slice(0, 80)}" (da ${c.channel ?? "?"})`).join("\n");
+      }
+    } catch { /* non-critical — skip silently */ }
+
+    const contextStr = `${userInfo}Context:\n\`\`\`json\n${JSON.stringify(context, null, 2)}\n\`\`\`\n\n${query}${commitmentSuffix}`;
+
+    // Build messages: recent history + current message
+    // Summary injection is handled by compressConversationIfNeeded (avoids double-injection)
     const history = chatId ? await getConversationHistory(chatId) : [];
+
     let messages: any[] = [
       ...history.map((e) => ({ role: e.role, content: e.content })),
       { role: "user", content: contextStr },
     ];
+
+    // Inject summary and/or compress if approaching context window limits
+    if (chatId) {
+      const compressed = await compressConversationIfNeeded(
+        chatId, this.client, this.model, fullSystemPrompt, messages, filteredTools,
+      );
+      messages = compressed.messages;
+    }
     let textParts: string[] = [];
 
     for (let i = 0; i < 5; i++) { // max 5 tool call rounds

@@ -16,6 +16,24 @@ import { employees } from "../models/schema.js";
 import { config } from "../config.js";
 import { logger } from "./logger.js";
 
+/** Returns the current hour (0-23) in the configured timezone. */
+function getLocalHour(): number {
+  return parseInt(
+    new Intl.DateTimeFormat("en", {
+      hour: "numeric",
+      hour12: false,
+      timeZone: config.TIMEZONE,
+    }).format(new Date()),
+    10,
+  );
+}
+
+/** True if current time is within quiet hours (23:00–07:00 local time). */
+function isQuietHours(): boolean {
+  const h = getLocalHour();
+  return h >= 23 || h < 7;
+}
+
 let app: SlackApp | null = null;
 
 /** Initialize with the Slack app instance (call from startSlackMonitor). */
@@ -74,8 +92,12 @@ async function resolveOwnerSlackId(): Promise<string | null> {
 }
 
 /** Send a notification to the owner via Slack DM. Falls back to notifications channel. */
-export async function sendOwnerNotification(text: string): Promise<void> {
+export async function sendOwnerNotification(text: string, opts?: { urgent?: boolean }): Promise<void> {
   if (!app) return;
+  if (!opts?.urgent && isQuietHours()) {
+    logger.debug({ text: text.slice(0, 60) }, "Notification suppressed (quiet hours)");
+    return;
+  }
   const mrkdwn = htmlToMrkdwn(text);
   const ownerId = await resolveOwnerSlackId();
   if (ownerId) {
@@ -93,10 +115,23 @@ export async function sendOwnerNotification(text: string): Promise<void> {
   }
 }
 
+/** Send a Block Kit message to a channel. */
+export async function sendBlockKitToChannel(channelId: string, text: string, blocks: unknown[]): Promise<boolean> {
+  if (!app) return false;
+  try {
+    await (app.client.chat.postMessage as Function)({ channel: channelId, text, blocks });
+    return true;
+  } catch (err) {
+    logger.error({ err, channelId }, "sendBlockKitToChannel failed");
+    return false;
+  }
+}
+
 /** Send a notification to both the assignee and the owner via Slack DM. */
 export async function notifyAssigneeAndOwner(
   assignedTo: string | null,
   text: string,
+  opts?: { urgent?: boolean },
 ): Promise<void> {
   if (!app) return;
 
@@ -115,7 +150,7 @@ export async function notifyAssigneeAndOwner(
     }
   }
 
-  await sendOwnerNotification(text);
+  await sendOwnerNotification(text, opts);
 }
 
 /** Send a notification to a specific employee by their DB id. Returns true on success. */

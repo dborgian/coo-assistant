@@ -162,10 +162,11 @@ async function executeEscalation(action: EscalationAction): Promise<void> {
       break;
     }
     case 3: {
-      // L3: Stale warning — Telegram + Slack #general
+      // L3: Stale warning — always urgent (bypass quiet hours)
       await notifyAssigneeAndOwner(
         assignedTo ?? null,
         `\u26A0\uFE0F Task "${taskTitle}" fermo da 3+ giorni dopo la scadenza (${assignee}). Serve intervento.`,
+        { urgent: true },
       );
       const _notifCh = getNotificationsChannel(); if (_notifCh) {
         await sendSlackMessage(
@@ -189,6 +190,7 @@ async function executeEscalation(action: EscalationAction): Promise<void> {
       await notifyAssigneeAndOwner(
         assignedTo ?? null,
         `\uD83D\uDEA8 ESCALATION CRITICA: Task "${taskTitle}" (${assignee}) — overdue da 7+ giorni\n\n\uD83E\uDD16 Raccomandazione: ${recommendation}`,
+        { urgent: true },
       );
       break;
     }
