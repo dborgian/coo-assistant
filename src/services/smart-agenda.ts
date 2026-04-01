@@ -3,6 +3,7 @@ import { agent } from "../core/agent.js";
 import { db } from "../models/database.js";
 import { employees, tasks } from "../models/schema.js";
 import { getTodayEvents } from "./calendar-sync.js";
+import { getUserGoogleAuth } from "../core/google-auth.js";
 import { sendEmail } from "./email-manager.js";
 import { sendEmployeeNotification, sendOwnerNotification } from "../utils/notify.js";
 import { logger } from "../utils/logger.js";
@@ -18,9 +19,15 @@ export async function generateAndSendAgendas(): Promise<void> {
 
   if (!activeEmployees.length) return;
 
-  const calendarEvents = await getTodayEvents().catch(() => []);
-
   for (const emp of activeEmployees) {
+    // Fetch THIS employee's own calendar (empty if they haven't connected Google)
+    const empAuth = emp.googleRefreshToken
+      ? getUserGoogleAuth(emp.googleRefreshToken)
+      : null;
+    const calendarEvents = empAuth
+      ? await getTodayEvents(empAuth).catch(() => [])
+      : [];
+
     try {
       // Get employee's tasks
       const empTasks = await db

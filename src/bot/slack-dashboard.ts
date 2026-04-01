@@ -11,6 +11,7 @@ import { db } from "../models/database.js";
 import { dailyReports, messageLogs, tasks } from "../models/schema.js";
 import { agent } from "../core/agent.js";
 import { getTodayEvents } from "../services/calendar-sync.js";
+import { getAuthForEmployee } from "../core/google-auth.js";
 import { getUnreadImportantEmails } from "../services/email-manager.js";
 import { getNotionWorkspaceSummary, isNotionConfigured } from "../services/notion-sync.js";
 import { listDriveFiles } from "../services/drive-manager.js";
@@ -40,7 +41,11 @@ export async function buildDashboardBlocks(
       .where(and(eq(tasks.assignedTo, employeeId), inArray(tasks.status, ["pending", "in_progress"])));
     const [myOverdueRow] = await db.select({ count: sql<number>`count(*)` }).from(tasks)
       .where(and(eq(tasks.assignedTo, employeeId), inArray(tasks.status, ["pending", "in_progress"]), lt(tasks.dueDate, now)));
-    const calendarEvents = await getTodayEvents().catch(() => []);
+    const empAuth = await getAuthForEmployee(employeeId);
+    const calendarEvents = empAuth ? await getTodayEvents(empAuth).catch(() => []) : [];
+    const calendarLabel = empAuth
+      ? `${calendarEvents.length} eventi oggi`
+      : `_Collega il tuo Google Calendar con /coo-connect-google_`;
 
     const overdueText = myOverdueRow?.count ? ` (${myOverdueRow.count} scaduti)` : "";
     return [
@@ -48,7 +53,7 @@ export async function buildDashboardBlocks(
         type: "section",
         text: {
           type: "mrkdwn",
-          text: `*Dashboard* — ${dateStr}\n━━━━━━━━━━━━━━━━━━━━━\n📋 I tuoi task: ${myTaskRow?.count ?? 0} attivi${overdueText}\n📅 Calendario: ${calendarEvents.length} eventi oggi`,
+          text: `*Dashboard* — ${dateStr}\n━━━━━━━━━━━━━━━━━━━━━\n📋 I tuoi task: ${myTaskRow?.count ?? 0} attivi${overdueText}\n📅 Calendario: ${calendarLabel}`,
         },
       },
       {
@@ -257,9 +262,13 @@ export function registerDashboardActions(slackApp: SlackApp, resolveUser: (slack
   slackApp.action("dash:calendar", async ({ ack, body, client }) => {
     await ack();
     try {
-      const events = await getTodayEvents().catch(() => []);
+      const calUser = await resolveUser((body as any).user.id);
+      const calAuth = await getAuthForEmployee(calUser?.employeeId ?? null, calUser?.role === "owner");
+      const events = calAuth ? await getTodayEvents(calAuth).catch(() => []) : [];
       let text = "*📅 Today's Calendar*\n━━━━━━━━━━━━━━━━━━━━━\n";
-      if (!events.length) {
+      if (!calAuth) {
+        text += "_Collega il tuo Google Calendar con /coo-connect-google per vedere i tuoi eventi._";
+      } else if (!events.length) {
         text += "Nessun evento oggi.";
       } else {
         for (const e of events) {

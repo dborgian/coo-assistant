@@ -1896,8 +1896,8 @@ Genera 5-10 task concreti e actionable.`,
   ): Promise<AgentResponse> {
     const collectedFiles: Array<{ buffer: Buffer; filename: string }> = [];
 
-    // Resolve per-user Google auth (falls back to global if no personal token)
-    const userAuth = await getAuthForEmployee(employeeId);
+    // Resolve per-user Google auth. Owner falls back to global token; non-owners get null if no personal token.
+    const userAuth = await getAuthForEmployee(employeeId, userRole === "owner");
 
     // Resolve per-user timezone
     let userTz: string | undefined;

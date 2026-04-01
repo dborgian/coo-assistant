@@ -67,8 +67,15 @@ export function getUserGoogleAuth(refreshToken: string) {
 
 export type GoogleAuth = ReturnType<typeof createOAuth2Client>;
 
-/** Resolve the Google auth client for a specific employee, falling back to global */
-export async function getAuthForEmployee(employeeId: string | null): Promise<GoogleAuth | null> {
+/**
+ * Resolve the Google auth client for a specific employee.
+ * By default returns null when the employee has no googleRefreshToken (no silent fallback to owner).
+ * Pass fallbackToGlobal=true only for the owner role where using the global token is intentional.
+ */
+export async function getAuthForEmployee(
+  employeeId: string | null,
+  fallbackToGlobal = false,
+): Promise<GoogleAuth | null> {
   if (!employeeId) return getGoogleAuth();
 
   try {
@@ -89,5 +96,5 @@ export async function getAuthForEmployee(employeeId: string | null): Promise<Goo
     logger.error({ err, employeeId }, "Failed to resolve employee Google auth");
   }
 
-  return getGoogleAuth();
+  return fallbackToGlobal ? getGoogleAuth() : null;
 }
