@@ -125,6 +125,7 @@ async function executeEscalation(action: EscalationAction): Promise<void> {
       await notifyAssigneeAndOwner(
         assignedTo ?? null,
         `\u23F0 Task "${taskTitle}" scade tra meno di 48 ore (${assignee})`,
+        { notifType: "escalations" },
       );
       break;
     }
@@ -143,6 +144,7 @@ async function executeEscalation(action: EscalationAction): Promise<void> {
       await notifyAssigneeAndOwner(
         assignedTo ?? null,
         `\u23F0 L1: Task "${taskTitle}" scade tra 24h — notificato ${assignee} via ${assigneeEmail ? "email" : ""}${assigneeEmail && assigneeSlackId ? " + " : ""}${assigneeSlackId ? "Slack" : ""}`,
+        { notifType: "escalations" },
       );
       break;
     }
@@ -151,6 +153,7 @@ async function executeEscalation(action: EscalationAction): Promise<void> {
       await notifyAssigneeAndOwner(
         assignedTo ?? null,
         `\uD83D\uDD34 OVERDUE: Task "${taskTitle}" ha superato la scadenza! (${assignee})`,
+        { notifType: "escalations" },
       );
       if (assigneeEmail) {
         await sendEmail(

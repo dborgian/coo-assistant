@@ -17,6 +17,7 @@ import { getNotionWorkspaceSummary, isNotionConfigured } from "../services/notio
 import { listDriveFiles } from "../services/drive-manager.js";
 import { canAccessSection } from "./permissions.js";
 import type { AccessRole } from "./auth-types.js";
+import { computeHealthScore } from "../services/health-score.js";
 import { logger } from "../utils/logger.js";
 
 const MAX_MSG_LEN = 3000;
@@ -75,15 +76,20 @@ export async function buildDashboardBlocks(
   const [slackRow] = await db.select({ count: sql<number>`count(*)` }).from(messageLogs)
     .where(and(sql`${messageLogs.receivedAt}::date = ${today}`, eq(messageLogs.source, "slack")));
   const slackToday = slackRow?.count ?? 0;
-  const [calendarEvents, emails, notionData] = await Promise.all([
+  const [calendarEvents, emails, notionData, healthScore] = await Promise.all([
     getTodayEvents().catch(() => []),
     getUnreadImportantEmails(5).catch(() => []),
     isNotionConfigured() ? getNotionWorkspaceSummary().catch(() => null) : Promise.resolve(null),
+    computeHealthScore().catch(() => null),
   ]);
 
   let statusText =
     `*COO Dashboard* — ${dateStr}\n` +
-    `━━━━━━━━━━━━━━━━━━━━━\n` +
+    `━━━━━━━━━━━━━━━━━━━━━\n`;
+  if (healthScore) {
+    statusText += `${healthScore.emoji} *Health Score: ${healthScore.score}/100* (${healthScore.label})\n`;
+  }
+  statusText +=
     `📋 Tasks: ${taskCount} attivi` + (overdueCount ? ` (${overdueCount} scaduti)` : "") + `\n` +
     `💬 Slack: ${slackToday} messaggi oggi\n` +
     `📧 Email: ${emails.length} non lette importanti\n` +

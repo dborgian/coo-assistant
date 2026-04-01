@@ -9,9 +9,9 @@
  * is required — Socket Mode handles routing automatically.
  */
 import type { App as SlackApp } from "@slack/bolt";
-import { and, desc, eq, inArray, lt, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import { db } from "../models/database.js";
-import { clients, dailyReports, employees, messageLogs, tasks } from "../models/schema.js";
+import { clients, dailyReports, employees, intelligenceEvents, messageLogs, tasks } from "../models/schema.js";
 import { agent } from "../core/agent.js";
 import { config } from "../config.js";
 import { logger } from "../utils/logger.js";
@@ -25,6 +25,9 @@ import { getMonitoredSlackChannels, addMonitoredSlackChannel, removeMonitoredSla
 import { buildDashboardBlocks } from "./slack-dashboard.js";
 import { processMeetingDocById } from "../services/meeting-notes.js";
 import { getRecentBotActions } from "../services/bot-actions.js";
+import { computeHealthScore, formatHealthScore } from "../services/health-score.js";
+import { muteNotif, unmuteNotif, getMutedTypes, ALL_NOTIF_TYPES } from "../utils/notification-prefs.js";
+import type { NotifType } from "../utils/notification-prefs.js";
 import type { SlackAuthUser } from "./slack-monitor.js";
 
 type ResolveFn = (slackId: string) => Promise<SlackAuthUser | null>;
@@ -525,6 +528,138 @@ export function registerSlashCommands(slackApp: SlackApp, resolveUser: ResolveFn
     }
   });
 
+  // /coo-health — quick health score on demand
+  slackApp.command("/coo-health", async ({ ack, command, respond }) => {
+    await ack();
+    try {
+      const user = await resolveUser(command.user_id);
+      if (!user || user.role === "viewer") { await respond("Accesso negato."); return; }
+      const hs = await computeHealthScore();
+      await respond(formatHealthScore(hs) + `\n\n_Completamento: ${hs.components.completionRate}% | Overdue ok: ${hs.components.overdueRatio}% | Bilanciamento: ${hs.components.workloadBalance}% | Commitment: ${hs.components.commitmentHealth}%_`);
+    } catch (err) {
+      logger.error({ err }, "/coo-health failed");
+      await respond("Errore nel calcolo del health score.");
+    }
+  });
+
+  // /coo-commitments — view and close open commitments (owner/admin)
+  slackApp.command("/coo-commitments", async ({ ack, command, client, respond }) => {
+    await ack();
+    try {
+      const user = await resolveUser(command.user_id);
+      if (!user || user.role === "viewer") { await respond("Accesso negato."); return; }
+      const open = await db
+        .select({ id: intelligenceEvents.id, content: intelligenceEvents.content, channel: intelligenceEvents.channel, detectedAt: intelligenceEvents.detectedAt })
+        .from(intelligenceEvents)
+        .where(and(eq(intelligenceEvents.type, "commitment"), eq(intelligenceEvents.status, "open")))
+        .orderBy(desc(intelligenceEvents.detectedAt))
+        .limit(15);
+      if (!open.length) {
+        await respond("Nessun commitment aperto.");
+        return;
+      }
+      const blocks: any[] = [
+        { type: "section", text: { type: "mrkdwn", text: `*Commitment Aperti (${open.length})*\n━━━━━━━━━━━━━━━━━━━━━` } },
+      ];
+      for (const c of open) {
+        const ts = c.detectedAt ? new Date(c.detectedAt).toLocaleDateString("it-IT") : "—";
+        blocks.push({
+          type: "section",
+          text: { type: "mrkdwn", text: `• _${ts}_ ${c.content.slice(0, 120)}${c.channel ? ` _(da ${c.channel})_` : ""}` },
+          accessory: {
+            type: "button",
+            text: { type: "plain_text", text: "✅ Chiudi" },
+            action_id: `commit_close_${c.id}`,
+            style: "primary",
+          },
+        });
+      }
+      await client.chat.postMessage({ channel: command.channel_id, text: "Commitment aperti", blocks });
+    } catch (err) {
+      logger.error({ err }, "/coo-commitments failed");
+      await respond("Errore nel caricamento dei commitment.");
+    }
+  });
+
+  // /coo-recap [ore] — AI-powered on-demand situation recap
+  slackApp.command("/coo-recap", async ({ ack, command, respond }) => {
+    await ack();
+    try {
+      const user = await resolveUser(command.user_id);
+      if (!user || user.role === "viewer") { await respond("Accesso negato."); return; }
+      const hoursArg = parseInt(command.text?.trim() || "24", 10);
+      const hours = isNaN(hoursArg) || hoursArg < 1 ? 24 : Math.min(hoursArg, 72);
+      const since = new Date(Date.now() - hours * 60 * 60 * 1000);
+
+      const [completedTasks, newTasks, slackMsgs, botActions] = await Promise.all([
+        db.select({ title: tasks.title, assignedTo: tasks.assignedTo }).from(tasks)
+          .where(and(eq(tasks.status, "done"), gte(tasks.updatedAt, since))),
+        db.select({ title: tasks.title, priority: tasks.priority }).from(tasks)
+          .where(gte(tasks.createdAt, since)).limit(20),
+        db.select({ count: sql<number>`count(*)` }).from(messageLogs)
+          .where(and(eq(messageLogs.source, "slack"), gte(messageLogs.receivedAt, since))),
+        getRecentBotActions(10),
+      ]);
+
+      await respond(`_Sto generando il recap delle ultime ${hours}h..._`);
+
+      const recap = await agent.think(
+        `Genera un recap operativo conciso delle ultime ${hours} ore. Sii diretto e utile come un COO che fa il punto al founder. Max 500 caratteri.`,
+        {
+          period_hours: hours,
+          tasks_completed: completedTasks.length,
+          tasks_created: newTasks.length,
+          slack_messages: Number(slackMsgs[0]?.count ?? 0),
+          bot_actions: botActions.slice(0, 5).map((a) => `[${a.actionType}] ${a.description}`),
+          completed_titles: completedTasks.slice(0, 5).map((t) => t.title),
+          new_task_titles: newTasks.slice(0, 5).map((t) => `${t.title} (${t.priority})`),
+        },
+      );
+
+      await respond(`*Recap ultime ${hours}h*\n\n${recap}`);
+    } catch (err) {
+      logger.error({ err }, "/coo-recap failed");
+      await respond("Errore nella generazione del recap.");
+    }
+  });
+
+  // /coo-notify [list|mute|unmute] [tipo] — notification preferences
+  slackApp.command("/coo-notify", async ({ ack, command, respond }) => {
+    await ack();
+    try {
+      const user = await resolveUser(command.user_id);
+      if (!user) { await respond("Non sei registrato nel sistema."); return; }
+      const parts = command.text?.trim().split(/\s+/) ?? [];
+      const action = parts[0]?.toLowerCase();
+      const typeArg = parts[1]?.toLowerCase() as NotifType | undefined;
+
+      if (!action || action === "list") {
+        const muted = await getMutedTypes(command.user_id);
+        const lines = ALL_NOTIF_TYPES.map((t) => `• \`${t}\` — ${muted.has(t) ? "🔕 silenziato" : "🔔 attivo"}`);
+        await respond(`*Preferenze Notifiche*\n\n${lines.join("\n")}\n\nUsa \`/coo-notify mute [tipo]\` o \`/coo-notify unmute [tipo]\``);
+        return;
+      }
+
+      if (!typeArg || !ALL_NOTIF_TYPES.includes(typeArg)) {
+        await respond(`Tipo non valido. Tipi disponibili: \`${ALL_NOTIF_TYPES.join("\`, \`")}\``);
+        return;
+      }
+
+      if (action === "mute") {
+        await muteNotif(command.user_id, typeArg);
+        await respond(`🔕 Notifiche \`${typeArg}\` silenziate.`);
+      } else if (action === "unmute") {
+        await unmuteNotif(command.user_id, typeArg);
+        await respond(`🔔 Notifiche \`${typeArg}\` riattivate.`);
+      } else {
+        await respond(`Azione non valida. Usa: \`list\`, \`mute [tipo]\`, \`unmute [tipo]\``);
+      }
+    } catch (err) {
+      logger.error({ err }, "/coo-notify failed");
+      await respond("Errore nella gestione delle preferenze.");
+    }
+  });
+
   // /coo-audit — recent bot autonomous actions (owner/admin only)
   slackApp.command("/coo-audit", async ({ ack, command, respond }) => {
     await ack();
@@ -561,6 +696,10 @@ export function registerSlashCommands(slackApp: SlackApp, resolveUser: ResolveFn
         "*/coo-tasks* [overdue] — Task attivi\n" +
         "*/coo-status* — Status operativo\n";
       const adminCmds =
+        "*/coo-health* — Health score operativo\n" +
+        "*/coo-commitments* — Commitment aperti\n" +
+        "*/coo-recap* [ore] — Digest AI on-demand (default 24h)\n" +
+        "*/coo-notify* [list|mute|unmute] [tipo] — Preferenze notifiche\n" +
         "*/coo-report* — Report operativo\n" +
         "*/coo-report-pdf* [weekly] — Report PDF\n" +
         "*/coo-employee-report* [nome] — Report dipendente\n" +

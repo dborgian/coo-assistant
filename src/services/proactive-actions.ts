@@ -92,7 +92,7 @@ export async function runProactiveCheck(): Promise<void> {
 
     if (recommendation && recommendation.trim().length > 20) {
       const msg = `\uD83E\uDD16 COO AI — Check Proattivo\n\n${recommendation}`;
-      await sendOwnerNotification(msg);
+      await sendOwnerNotification(msg, { notifType: "proactive" });
       logger.info({ issueCount: issues.length }, "Proactive check: recommendations sent");
     }
   } catch (err) {

@@ -15,6 +15,8 @@ import { db } from "../models/database.js";
 import { employees } from "../models/schema.js";
 import { config } from "../config.js";
 import { logger } from "./logger.js";
+import type { NotifType } from "./notification-prefs.js";
+import { getMutedTypes } from "./notification-prefs.js";
 
 /** Returns the current hour (0-23) in the configured timezone. */
 function getLocalHour(): number {
@@ -92,7 +94,10 @@ async function resolveOwnerSlackId(): Promise<string | null> {
 }
 
 /** Send a notification to the owner via Slack DM. Falls back to notifications channel. */
-export async function sendOwnerNotification(text: string, opts?: { urgent?: boolean }): Promise<void> {
+export async function sendOwnerNotification(
+  text: string,
+  opts?: { urgent?: boolean; notifType?: NotifType },
+): Promise<void> {
   if (!app) return;
   if (!opts?.urgent && isQuietHours()) {
     logger.debug({ text: text.slice(0, 60) }, "Notification suppressed (quiet hours)");
@@ -100,6 +105,14 @@ export async function sendOwnerNotification(text: string, opts?: { urgent?: bool
   }
   const mrkdwn = htmlToMrkdwn(text);
   const ownerId = await resolveOwnerSlackId();
+  // Check mute preferences (non-urgent only)
+  if (opts?.notifType && !opts?.urgent && ownerId) {
+    const muted = await getMutedTypes(ownerId);
+    if (muted.has(opts.notifType)) {
+      logger.debug({ notifType: opts.notifType }, "Notification muted by owner pref");
+      return;
+    }
+  }
   if (ownerId) {
     const sent = await sendSlackDM(ownerId, mrkdwn);
     if (sent) return;
@@ -131,7 +144,7 @@ export async function sendBlockKitToChannel(channelId: string, text: string, blo
 export async function notifyAssigneeAndOwner(
   assignedTo: string | null,
   text: string,
-  opts?: { urgent?: boolean },
+  opts?: { urgent?: boolean; notifType?: NotifType },
 ): Promise<void> {
   if (!app) return;
 

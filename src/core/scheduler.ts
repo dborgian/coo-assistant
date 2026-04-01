@@ -4,6 +4,26 @@ import { logger } from "../utils/logger.js";
 
 type JobCallback = () => Promise<void>;
 
+/**
+ * Wrap a job callback so that if the previous run is still in progress,
+ * the next scheduled trigger is skipped rather than running concurrently.
+ */
+function makeGuarded(name: string, cb: JobCallback): JobCallback {
+  let running = false;
+  return async () => {
+    if (running) {
+      logger.warn({ job: name }, "Cron job still running — skipping overlapping execution");
+      return;
+    }
+    running = true;
+    try {
+      await cb();
+    } finally {
+      running = false;
+    }
+  };
+}
+
 interface ScheduledJobs {
   dailyReport?: cron.ScheduledTask;
   chatMonitor?: cron.ScheduledTask;
@@ -77,6 +97,15 @@ export function setupSchedules(callbacks: {
   calendarWatchRenewal: JobCallback;
   brainCleanup: JobCallback;
 }): void {
+  // Pre-wrap high-frequency jobs with concurrency guards (prevents overlapping runs)
+  const guardedChatMonitor = makeGuarded("chatMonitor", callbacks.chatMonitor);
+  const guardedEmailCheck = makeGuarded("emailCheck", callbacks.emailCheck);
+  const guardedTaskReminders = makeGuarded("taskReminders", callbacks.taskReminders);
+  const guardedNotionTwoWaySync = makeGuarded("notionTwoWaySync", callbacks.notionTwoWaySync);
+  const guardedThreadSummarizer = makeGuarded("threadSummarizer", callbacks.threadSummarizer);
+  const guardedMeetingActions = makeGuarded("meetingActions", callbacks.meetingActions);
+  const guardedMeetingNotes = makeGuarded("meetingNotes", callbacks.meetingNotes);
+
   // Daily operations report
   const { DAILY_REPORT_HOUR: h, DAILY_REPORT_MINUTE: m, TIMEZONE: tz } = config;
   jobs.dailyReport = cron.schedule(`${m} ${h} * * *`, () => {
@@ -87,9 +116,7 @@ export function setupSchedules(callbacks: {
 
   // Chat monitoring (every N minutes)
   jobs.chatMonitor = cron.schedule(`*/${config.CHAT_CHECK_INTERVAL_MINUTES} * * * *`, () => {
-    callbacks.chatMonitor().catch((err) =>
-      logger.error({ err }, "Chat monitor failed"),
-    );
+    guardedChatMonitor().catch((err) => logger.error({ err }, "Chat monitor failed"));
   });
 
   // Calendar conflict check (every N minutes)
@@ -101,16 +128,12 @@ export function setupSchedules(callbacks: {
 
   // Email check (every N minutes)
   jobs.emailCheck = cron.schedule(`*/${config.EMAIL_CHECK_INTERVAL_MINUTES} * * * *`, () => {
-    callbacks.emailCheck().catch((err) =>
-      logger.error({ err }, "Email check failed"),
-    );
+    guardedEmailCheck().catch((err) => logger.error({ err }, "Email check failed"));
   });
 
   // Task reminder check (every 10 minutes)
   jobs.taskReminders = cron.schedule("*/10 * * * *", () => {
-    callbacks.taskReminders().catch((err) =>
-      logger.error({ err }, "Task reminders failed"),
-    );
+    guardedTaskReminders().catch((err) => logger.error({ err }, "Task reminders failed"));
   });
 
   // Notion sync (every N minutes)
@@ -185,9 +208,7 @@ export function setupSchedules(callbacks: {
 
   // Meeting action items (every 30 min, checks for recently ended meetings)
   jobs.meetingActions = cron.schedule("*/30 * * * *", () => {
-    callbacks.meetingActions().catch((err) =>
-      logger.error({ err }, "Meeting actions check failed"),
-    );
+    guardedMeetingActions().catch((err) => logger.error({ err }, "Meeting actions check failed"));
   });
 
   // Weekly client status updates (Monday at 09:00)
@@ -199,9 +220,7 @@ export function setupSchedules(callbacks: {
 
   // Notion two-way sync (every 5 minutes)
   jobs.notionTwoWaySync = cron.schedule("*/5 * * * *", () => {
-    callbacks.notionTwoWaySync().catch((err) =>
-      logger.error({ err }, "Notion two-way sync failed"),
-    );
+    guardedNotionTwoWaySync().catch((err) => logger.error({ err }, "Notion two-way sync failed"));
   });
 
   // Google Sheets dashboard export (weekly, Monday at 08:00)
@@ -262,9 +281,7 @@ export function setupSchedules(callbacks: {
 
   // Thread summarizer (every 15 min — check for quiet threads)
   jobs.threadSummarizer = cron.schedule("*/15 * * * *", () => {
-    callbacks.threadSummarizer().catch((err) =>
-      logger.error({ err }, "Thread summarizer failed"),
-    );
+    guardedThreadSummarizer().catch((err) => logger.error({ err }, "Thread summarizer failed"));
   });
 
   // Daily Slack channel digest (18:00)
@@ -289,9 +306,7 @@ export function setupSchedules(callbacks: {
 
   // Meeting notes (every 30 min — all days 7-22, webhook covers real-time)
   jobs.meetingNotes = cron.schedule("*/30 7-22 * * *", () => {
-    callbacks.meetingNotes().catch((err) =>
-      logger.error({ err }, "Meeting notes check failed"),
-    );
+    guardedMeetingNotes().catch((err) => logger.error({ err }, "Meeting notes check failed"));
   }, { timezone: tz });
 
   // Calendar push watch renewal (every 6 days at 03:00 — watch expires after 7 days)

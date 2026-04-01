@@ -117,7 +117,7 @@ export async function checkImportantEmails(): Promise<void> {
         .filter(Boolean)
         .join("\n");
 
-      await sendOwnerNotification(msg);
+      await sendOwnerNotification(msg, { notifType: "email_alerts" });
 
       // Offer draft reply for emails that need a response
       if (classification.needs_reply) {

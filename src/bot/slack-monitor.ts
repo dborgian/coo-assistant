@@ -395,6 +395,21 @@ export async function startSlackMonitor(): Promise<boolean> {
     }
   });
 
+  // Commitment close button (from /coo-commitments)
+  slackApp.action(/^commit_close_/, async ({ body, ack, respond }) => {
+    await ack();
+    const actionId = ((body as any).actions?.[0]?.action_id ?? "") as string;
+    const commitId = actionId.replace("commit_close_", "");
+    try {
+      await db.update(intelligenceEvents).set({ status: "fulfilled" }).where(eq(intelligenceEvents.id, commitId));
+      await respond({ text: "✅ Commitment chiuso.", replace_original: false });
+      logger.info({ commitId }, "Commitment closed via Slack button");
+    } catch (err) {
+      logger.error({ err, commitId }, "Failed to close commitment");
+      await respond({ text: "Errore nella chiusura del commitment.", replace_original: false });
+    }
+  });
+
   slackApp.action("snooze_task", async ({ action, ack, respond, body }) => {
     await ack();
     try {
