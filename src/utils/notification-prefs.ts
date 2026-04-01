@@ -54,6 +54,10 @@ async function loadFromRedis(slackUserId: string): Promise<Set<string>> {
 
 /** Mute a notification type for a user. */
 export async function muteNotif(slackUserId: string, type: NotifType): Promise<void> {
+  // Load from Redis first to avoid overwriting existing prefs after restart
+  if (!memPrefs.has(slackUserId)) {
+    await loadFromRedis(slackUserId);
+  }
   const set = memPrefs.get(slackUserId) ?? new Set<string>();
   set.add(type);
   memPrefs.set(slackUserId, set);
@@ -65,6 +69,10 @@ export async function muteNotif(slackUserId: string, type: NotifType): Promise<v
 
 /** Unmute a notification type for a user. */
 export async function unmuteNotif(slackUserId: string, type: NotifType): Promise<void> {
+  // Load from Redis first to avoid overwriting existing prefs after restart
+  if (!memPrefs.has(slackUserId)) {
+    await loadFromRedis(slackUserId);
+  }
   const set = memPrefs.get(slackUserId);
   if (set) {
     set.delete(type);

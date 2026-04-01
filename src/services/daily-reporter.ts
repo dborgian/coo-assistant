@@ -103,17 +103,19 @@ export async function generateAndSendDailyReport(): Promise<void> {
 
   const reportContent = await agent.generateDailyReport(reportData);
 
-  // Save to DB
+  // Prepend health score header (used for both DB and Slack)
+  const healthHeader = healthScore ? `${formatHealthScore(healthScore)}\n\n` : "";
+  const fullReport = healthHeader + reportContent;
+
+  // Save to DB (with health score included)
   await db.insert(dailyReports).values({
     reportDate: today,
     reportType: "daily",
-    content: reportContent,
+    content: fullReport,
   });
 
   // Send via Slack
   try {
-    const healthHeader = healthScore ? `${formatHealthScore(healthScore)}\n\n` : "";
-    const fullReport = healthHeader + reportContent;
     if (fullReport.length > 4000) {
       for (let i = 0; i < fullReport.length; i += 4000) {
         await sendOwnerNotification(fullReport.slice(i, i + 4000));

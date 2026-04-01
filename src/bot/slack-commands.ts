@@ -675,7 +675,7 @@ export function registerSlashCommands(slackApp: SlackApp, resolveUser: ResolveFn
         return;
       }
       const lines = actions.map((a) => {
-        const ts = a.detectedAt ? new Date(a.detectedAt).toLocaleString("it-IT", { timeZone: "Europe/Rome", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—";
+        const ts = a.detectedAt ? new Date(a.detectedAt).toLocaleString("it-IT", { timeZone: config.TIMEZONE || "Europe/Rome", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—";
         return `• \`${ts}\` *[${a.actionType}]* ${a.description}`;
       });
       await respond(`*COO Assistant — Azioni Autonome (ultime ${actions.length})*\n\n${lines.join("\n")}`);

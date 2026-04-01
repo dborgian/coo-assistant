@@ -8,7 +8,7 @@ import { eq, sql } from "drizzle-orm";
 import type { App as SlackApp } from "@slack/bolt";
 import { db } from "../models/database.js";
 import { intelligenceEvents } from "../models/schema.js";
-import { sendEmail } from "../services/email-manager.js";
+import { replyToEmail } from "../services/email-manager.js";
 import { logBotAction } from "../services/bot-actions.js";
 import { logger } from "../utils/logger.js";
 
@@ -42,11 +42,7 @@ export function registerDraftApprovals(app: SlackApp): void {
 
       const meta = pending.metadata as unknown as DraftMeta;
 
-      // Extract email address from "Name <email@domain>" or plain address
-      const emailMatch = meta.from.match(/<([^>]+)>/) ?? [null, meta.from];
-      const replyTo = emailMatch[1] ?? meta.from;
-
-      const sent = await sendEmail(replyTo, meta.replySubject, meta.draft);
+      const sent = await replyToEmail(meta.emailId, meta.draft);
 
       if (!sent) {
         await respond({ text: "Errore nell'invio della risposta. Controlla la configurazione Gmail.", replace_original: true });
@@ -58,9 +54,9 @@ export function registerDraftApprovals(app: SlackApp): void {
         .set({ status: "fulfilled" })
         .where(eq(intelligenceEvents.id, pendingId));
 
-      await logBotAction("draft_sent", `Risposta inviata a ${replyTo} — "${meta.replySubject}"`, { pendingId, to: replyTo });
-      await respond({ text: `✅ Risposta inviata a ${replyTo}.`, replace_original: true });
-      logger.info({ pendingId, to: replyTo }, "Draft response sent");
+      await logBotAction("draft_sent", `Risposta inviata a ${meta.from} — "${meta.replySubject}"`, { pendingId, emailId: meta.emailId });
+      await respond({ text: `✅ Risposta inviata a ${meta.from}.`, replace_original: true });
+      logger.info({ pendingId, emailId: meta.emailId }, "Draft response sent (threaded reply)");
     } catch (err) {
       logger.error({ err, pendingId }, "Failed to send draft response");
       await respond({ text: "Errore durante l'invio.", replace_original: true });
