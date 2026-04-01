@@ -15,12 +15,16 @@
  * proactively suggests the stored preference.
  */
 import Anthropic from "@anthropic-ai/sdk";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, lt, sql } from "drizzle-orm";
 import { db } from "../models/database.js";
 import { userMemory } from "../models/schema.js";
 import { logger } from "../utils/logger.js";
 
 const extractor = new Anthropic();
+
+// Rate-limit: avoid Haiku API call if same chatId was extracted less than 5 min ago
+const lastExtractionAt = new Map<string, number>();
+const EXTRACTION_MIN_INTERVAL_MS = 5 * 60 * 1000;
 
 export interface MemoryEntry {
   category: string;
@@ -59,8 +63,11 @@ export function formatMemoriesForPrompt(memories: MemoryEntry[]): string {
 
 /** Uses claude-haiku to extract preferences/patterns and upserts them into DB. */
 export async function extractAndSaveMemories(chatId: string, query: string, response: string): Promise<void> {
-  // Skip trivial exchanges — not worth an API call
-  if (query.length < 10 || response.length < 20) return;
+  // Skip trivial exchanges and rate-limit per chatId
+  if ((query + response).length < 80) return;
+  const now = Date.now();
+  if (now - (lastExtractionAt.get(chatId) ?? 0) < EXTRACTION_MIN_INTERVAL_MS) return;
+  lastExtractionAt.set(chatId, now);
   try {
     const result = await extractor.messages.create({
       model: "claude-haiku-4-5-20251001",
@@ -116,5 +123,36 @@ NON estrarre: fatti banali, info gia' nel sistema, richieste chiaramente one-tim
     logger.debug({ chatId, count: extracted.length }, "User memories saved");
   } catch (e) {
     logger.error({ err: e, chatId }, "extractAndSaveMemories failed");
+  }
+}
+
+/**
+ * Decay confidence of stale user memories and delete abandoned ones.
+ * Called from weekly cleanupOldData() — no new cron job needed.
+ */
+export async function decayStaleMemories(): Promise<void> {
+  try {
+    const DAY = 24 * 60 * 60 * 1000;
+    const sixtyDaysAgo = new Date(Date.now() - 60 * DAY);
+    const ninetyDaysAgo = new Date(Date.now() - 90 * DAY);
+
+    // Decrement confidence for memories not used in 60+ days (only if confidence > 1)
+    await db.update(userMemory)
+      .set({ confidence: sql`${userMemory.confidence} - 1` })
+      .where(and(
+        lt(userMemory.lastUsed, sixtyDaysAgo),
+        sql`${userMemory.confidence} > 1`,
+      ));
+
+    // Delete memories with confidence <= 0 that haven't been used in 90+ days
+    await db.delete(userMemory)
+      .where(and(
+        lt(userMemory.lastUsed, ninetyDaysAgo),
+        sql`${userMemory.confidence} <= 0`,
+      ));
+
+    logger.debug("Stale user memories decayed");
+  } catch (e) {
+    logger.error({ err: e }, "decayStaleMemories failed");
   }
 }

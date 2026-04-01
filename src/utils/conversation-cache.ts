@@ -66,6 +66,17 @@ export async function addToConversation(chatId: string, role: "user" | "assistan
       logger.error({ err: e, chatId }, "Redis set failed");
     }
   }
+  // Evict expired entries when cache grows large
+  if (memCache.size > 500) {
+    const expiry = TTL_SECONDS * 1000;
+    for (const [k, v] of memCache) {
+      if (Date.now() - v.updatedAt > expiry) memCache.delete(k);
+    }
+    if (memCache.size > 500) {
+      const oldest = [...memCache.entries()].sort((a, b) => a[1].updatedAt - b[1].updatedAt);
+      for (const [k] of oldest.slice(0, 100)) memCache.delete(k);
+    }
+  }
   let s = memCache.get(chatId);
   if (!s || Date.now() - s.updatedAt > TTL_SECONDS * 1000) {
     s = { messages: [], updatedAt: Date.now() };

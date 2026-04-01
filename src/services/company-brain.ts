@@ -9,12 +9,14 @@
  * The brain context is injected into every agent query so the AI is
  * always aware of recent decisions, ongoing work, and team/project facts.
  */
-import { and, desc, eq, lt } from "drizzle-orm";
+import { and, desc, eq, lt, sql } from "drizzle-orm";
 import { agent } from "../core/agent.js";
+import { config } from "../config.js";
 import { db } from "../models/database.js";
-import { intelligenceEvents } from "../models/schema.js";
+import { intelligenceEvents, messageLogs, sentimentScores, communicationStats, employeeMetrics, dailyReports } from "../models/schema.js";
 import { getRedis } from "../utils/conversation-cache.js";
 import { logger } from "../utils/logger.js";
+import { decayStaleMemories } from "./user-memory.js";
 
 // Mutex to prevent race condition when two concurrent calls update the facts key
 let factsLock = false;
@@ -148,7 +150,7 @@ Rispondi SOLO con JSON:
   while (factsLock) await new Promise((r) => setTimeout(r, 100));
   factsLock = true;
   try {
-    const raw = await agent.think(prompt);
+    const raw = await agent.think(prompt, undefined, true); // skipBrain: avoid circular injection
     const match = raw.match(/\{[\s\S]*\}/);
     if (!match) return;
     const extracted = JSON.parse(match[0]) as { facts: Array<{ fact: string; category: string }> };
@@ -182,7 +184,7 @@ ${sameCategory.map((f, i) => `${i + 1}. [${f.category}] ${f.fact}`).join("\n")}
 
 Rispondi SOLO con JSON: {"superseded": ["testo esatto del fatto da rimuovere"]}
 Se nessun conflitto: {"superseded": []}`;
-          const raw = await agent.think(conflictPrompt);
+          const raw = await agent.think(conflictPrompt, undefined, true); // skipBrain
           const match = raw.match(/\{[\s\S]*\}/);
           if (match) {
             const { superseded } = JSON.parse(match[0]) as { superseded: string[] };
@@ -191,6 +193,16 @@ Se nessun conflitto: {"superseded": []}`;
               const removed = existing.filter((f) => supersededSet.has(f.fact.toLowerCase()));
               existing.splice(0, existing.length, ...existing.filter((f) => !supersededSet.has(f.fact.toLowerCase())));
               logger.info({ count: removed.length, facts: removed.map((f) => f.fact.slice(0, 60)) }, "Superseded brain facts removed");
+              // FIX 2: sync removals to DB so rebuildBrainFromDB doesn't resurrect them
+              for (const removedFact of removed) {
+                await db.update(intelligenceEvents)
+                  .set({ status: "superseded" })
+                  .where(and(
+                    eq(intelligenceEvents.type, "company_fact"),
+                    eq(intelligenceEvents.content, removedFact.fact),
+                    eq(intelligenceEvents.status, "active"),
+                  )).catch(() => {});
+              }
             }
           }
         } catch { /* conflict detection is best-effort */ }
@@ -238,11 +250,72 @@ export async function resolveDecision(decisionText: string): Promise<string> {
   return `${removedCount} decisione${removedCount > 1 ? "i" : ""} marcata${removedCount > 1 ? "e" : ""} come risolta${removedCount > 1 ? "e" : ""}.`;
 }
 
+/** DB fallback for loadBrainContext when Redis is unavailable. */
+async function loadBrainContextFromDB(): Promise<string> {
+  const parts: string[] = [];
+
+  const meetingRows = await db
+    .select()
+    .from(intelligenceEvents)
+    .where(eq(intelligenceEvents.type, "meeting_notes"))
+    .orderBy(desc(intelligenceEvents.createdAt))
+    .limit(3)
+    .catch(() => []);
+
+  if (meetingRows.length) {
+    const lines = meetingRows.map((row) => {
+      const meta = (row.metadata ?? {}) as Record<string, unknown>;
+      const title = (meta.title as string) ?? row.content.split(":")[0] ?? "Meeting";
+      const date = (meta.date as string) ?? row.createdAt?.toISOString().split("T")[0] ?? "";
+      const summary = row.content.replace(/^[^:]+:\s*/, "").slice(0, 100);
+      const decisions = (meta.keyDecisions as string[]) ?? [];
+      const dec = decisions.length ? ` | Decisioni: ${decisions.slice(0, 2).join("; ")}` : "";
+      return `• [${date}] ${title}\n  ${summary}${dec}`;
+    });
+    parts.push(`ULTIMI MEETING:\n${lines.join("\n\n")}`);
+  }
+
+  const factRows = await db
+    .select()
+    .from(intelligenceEvents)
+    .where(and(eq(intelligenceEvents.type, "company_fact"), eq(intelligenceEvents.status, "active")))
+    .orderBy(desc(intelligenceEvents.createdAt))
+    .limit(30)
+    .catch(() => []);
+
+  if (factRows.length) {
+    const byCategory = new Map<string, string[]>();
+    for (const row of factRows.slice(0, 15)) {
+      const meta = (row.metadata ?? {}) as Record<string, unknown>;
+      const cat = (meta.category as string) ?? "process";
+      if (!byCategory.has(cat)) byCategory.set(cat, []);
+      if (byCategory.get(cat)!.length < 3) byCategory.get(cat)!.push(row.content);
+    }
+    const lines: string[] = [];
+    for (const [cat, factList] of byCategory) {
+      lines.push(`[${cat.toUpperCase()}]`);
+      factList.forEach((f) => lines.push(`  • ${f}`));
+    }
+    parts.push(`FATTI AZIENDALI:\n${lines.join("\n")}`);
+  }
+
+  if (!parts.length) return "";
+  const body = parts.join("\n\n");
+  const capped = body.length > 3200 ? body.slice(0, 3200) + "\n[...troncato]" : body;
+  return `\n\n---\nCONTESTO AZIENDA (da DB — Redis offline):\n${capped}\n---`;
+}
+
 /**
  * Load brain context as a compact string for injection into the agent system prompt.
  * Keeps total size under ~600 tokens.
  */
 export async function loadBrainContext(): Promise<string> {
+  // FIX 3: if Redis is unavailable, fall back to DB directly
+  if (!getRedis()) {
+    logger.warn("Brain loading from DB fallback — Redis unavailable");
+    return loadBrainContextFromDB();
+  }
+
   const [meetingsRaw, decisionsRaw, factsRaw] = await Promise.all([
     rGet(MEETINGS_KEY),
     rGet(DECISIONS_KEY),
@@ -492,27 +565,59 @@ export async function addFactToBrain(
 }
 
 /**
- * Delete old intelligence_events rows to prevent unbounded table growth.
- * Run weekly: deletes meeting_notes > 90 days, superseded facts > 30 days.
+ * Delete old rows across all unbounded tables to prevent runaway DB growth.
+ * Run weekly (Sunday 03:30). Also decays stale user memory confidence.
  */
-export async function cleanupOldIntelligenceEvents(): Promise<void> {
-  const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
-  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+export async function cleanupOldData(): Promise<void> {
+  const DAY = 24 * 60 * 60 * 1000;
+  const retentionDays = config.MESSAGE_RETENTION_DAYS ?? 90;
+  const daysAgoStr = (days: number) => new Date(Date.now() - days * DAY).toISOString().split("T")[0];
+  const daysAgoTs = (days: number) => new Date(Date.now() - days * DAY);
 
+  // intelligence_events: meeting notes > 90d, superseded facts > 30d
   await db.delete(intelligenceEvents).where(
-    and(eq(intelligenceEvents.type, "meeting_notes"), lt(intelligenceEvents.createdAt, ninetyDaysAgo)),
+    and(eq(intelligenceEvents.type, "meeting_notes"), lt(intelligenceEvents.createdAt, daysAgoTs(90))),
   ).catch((err) => logger.warn({ err }, "Failed to cleanup old meeting events"));
 
   await db.delete(intelligenceEvents).where(
     and(
       eq(intelligenceEvents.type, "company_fact"),
       eq(intelligenceEvents.status, "superseded"),
-      lt(intelligenceEvents.createdAt, thirtyDaysAgo),
+      lt(intelligenceEvents.createdAt, daysAgoTs(30)),
     ),
   ).catch((err) => logger.warn({ err }, "Failed to cleanup superseded facts"));
 
-  logger.info("Intelligence events cleanup completed");
+  // messageLogs: respect MESSAGE_RETENTION_DAYS config (default 90d)
+  await db.delete(messageLogs)
+    .where(lt(messageLogs.receivedAt, daysAgoTs(retentionDays)))
+    .catch((err) => logger.warn({ err }, "Failed to cleanup old message logs"));
+
+  // Derived analytics tables: keep 180 days
+  await db.delete(sentimentScores)
+    .where(sql`${sentimentScores.date} < ${daysAgoStr(180)}`)
+    .catch((err) => logger.warn({ err }, "Failed to cleanup old sentiment scores"));
+
+  await db.delete(communicationStats)
+    .where(sql`${communicationStats.date} < ${daysAgoStr(180)}`)
+    .catch((err) => logger.warn({ err }, "Failed to cleanup old communication stats"));
+
+  await db.delete(employeeMetrics)
+    .where(sql`${employeeMetrics.date} < ${daysAgoStr(180)}`)
+    .catch((err) => logger.warn({ err }, "Failed to cleanup old employee metrics"));
+
+  // Daily reports: keep 1 year
+  await db.delete(dailyReports)
+    .where(sql`${dailyReports.reportDate} < ${daysAgoStr(365)}`)
+    .catch((err) => logger.warn({ err }, "Failed to cleanup old daily reports"));
+
+  // Decay stale user memory entries
+  await decayStaleMemories().catch((err) => logger.warn({ err }, "Failed to decay stale memories"));
+
+  logger.info({ retentionDays }, "Data cleanup completed");
 }
+
+/** @deprecated Use cleanupOldData() */
+export const cleanupOldIntelligenceEvents = cleanupOldData;
 
 /**
  * Returns a diagnostic summary of what's currently in the brain.

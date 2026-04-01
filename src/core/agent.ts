@@ -217,15 +217,19 @@ class COOAgent {
   async think(
     prompt: string,
     context?: Record<string, unknown>,
+    skipBrain = false,
   ): Promise<string> {
     const content = context
       ? `Context:\n\`\`\`json\n${JSON.stringify(context, null, 2)}\n\`\`\`\n\n${prompt}`
       : prompt;
 
+    const brainCtx = skipBrain ? "" : await loadBrainContext().catch(() => "");
+    const systemPrompt = brainCtx ? COO_SYSTEM_PROMPT + brainCtx : COO_SYSTEM_PROMPT;
+
     const response = await this.client.messages.create({
       model: this.model,
       max_tokens: 4096,
-      system: COO_SYSTEM_PROMPT,
+      system: systemPrompt,
       messages: [{ role: "user", content }],
     });
 
