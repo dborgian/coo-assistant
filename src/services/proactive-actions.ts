@@ -142,12 +142,31 @@ export async function generateWeeklyDigest(): Promise<void> {
 
   const workload = await getTeamWorkload().catch(() => []);
 
+  // Trend delta: compare with previous week
+  const twoWeeksAgo = new Date(weekAgo);
+  twoWeeksAgo.setDate(twoWeeksAgo.getDate() - 7);
+
+  const [completedPrevWeek] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(tasks)
+    .where(and(eq(tasks.status, "done"), gte(tasks.updatedAt, twoWeeksAgo), sql`${tasks.updatedAt} < ${weekAgo}`));
+
+  const [createdPrevWeek] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(tasks)
+    .where(and(gte(tasks.createdAt, twoWeeksAgo), sql`${tasks.createdAt} < ${weekAgo}`));
+
+  const completedDelta = Number(completedThisWeek?.count ?? 0) - Number(completedPrevWeek?.count ?? 0);
+  const createdDelta = Number(createdThisWeek?.count ?? 0) - Number(createdPrevWeek?.count ?? 0);
+
   const digest = await agent.think(
     `Genera un digest settimanale delle operazioni. Scrivi come un COO che fa il punto della settimana al founder. Evidenzia trend positivi e negativi, rischi, e suggerisci priorita per la prossima settimana. Max 800 caratteri.`,
     {
       period: `${weekAgo.toISOString().split("T")[0]} — ${now.toISOString().split("T")[0]}`,
       tasks_completed: Number(completedThisWeek?.count ?? 0),
+      tasks_completed_delta: completedDelta >= 0 ? `+${completedDelta}` : String(completedDelta),
       tasks_created: Number(createdThisWeek?.count ?? 0),
+      tasks_created_delta: createdDelta >= 0 ? `+${createdDelta}` : String(createdDelta),
       tasks_active: activeTasks.length,
       tasks_overdue: overdue.length,
       slack_messages: Number(slackMsgCount?.count ?? 0),

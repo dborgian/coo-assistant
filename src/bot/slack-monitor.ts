@@ -15,6 +15,7 @@ import { registerSlashCommands } from "./slack-commands.js";
 import { registerDashboardActions } from "./slack-dashboard.js";
 import { registerOAuthCommands } from "./onboarding.js";
 import { registerMeetingApprovals } from "./meeting-approvals.js";
+import { registerDraftApprovals } from "./draft-approvals.js";
 
 let slackApp: SlackApp | null = null;
 let slackBotUserId: string | null = null;
@@ -263,6 +264,7 @@ export async function startSlackMonitor(): Promise<boolean> {
   registerDashboardActions(slackApp, resolveSlackUser);
   registerOAuthCommands(slackApp);
   registerMeetingApprovals(slackApp);
+  registerDraftApprovals(slackApp);
 
   // Auto-discover channels the bot is a member of
   try {

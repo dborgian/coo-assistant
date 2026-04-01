@@ -37,6 +37,7 @@ import { getAllowedToolNames } from "../bot/permissions.js";
 import { getConversationHistory, addToConversation } from "../utils/conversation-cache.js";
 import { getUserMemories, formatMemoriesForPrompt, extractAndSaveMemories } from "../services/user-memory.js";
 import { compressConversationIfNeeded } from "../services/context-compressor.js";
+import { logBotAction } from "../services/bot-actions.js";
 
 export interface AgentResponse {
   text: string;
@@ -823,18 +824,49 @@ ${JSON.stringify(data, null, 2)}`;
   private async executeTool(name: string, input: Record<string, any>, userAuth?: GoogleAuth | null, userTz?: string, collectedFiles?: Array<{ buffer: Buffer; filename: string }>): Promise<string> {
     try {
       if (name === "create_task") {
-        // Check for missing key fields — return a preview and ask user to confirm before creating
+        // Auto-assign: if no assignee specified, pick the least-loaded available employee
+        let autoAssignedId: string | null = null;
+        let autoAssignedName: string | null = null;
+        let autoAssignPct: number | null = null;
+        if (!input.assigned_to_name) {
+          try {
+            const workload = await getTeamWorkload();
+            const available = workload
+              .filter((w) => w.workloadScore < 0.8)
+              .sort((a, b) => a.workloadScore - b.workloadScore);
+            if (available.length) {
+              const best = available[0];
+              const [emp] = await db
+                .select({ id: employees.id })
+                .from(employees)
+                .where(sql`${employees.name} ILIKE ${"%" + best.employeeName + "%"}`)
+                .limit(1);
+              if (emp) {
+                autoAssignedId = emp.id;
+                autoAssignedName = best.employeeName;
+                autoAssignPct = Math.round(best.workloadScore * 100);
+              }
+            }
+          } catch { /* non-critical — skip silently */ }
+        }
+
+        // Check for missing key fields — ask user to confirm only if 2+ fields truly missing
         const missingFields: string[] = [];
         if (!input.priority) missingFields.push("priorita' (default: media)");
         if (!input.due_date) missingFields.push("scadenza (default: nessuna)");
-        if (!input.assigned_to_name) missingFields.push("assegnatario (default: nessuno)");
+        // Assignee only counts as missing if auto-assign also failed
+        if (!input.assigned_to_name && !autoAssignedName) missingFields.push("assegnatario (default: nessuno)");
         if (missingFields.length >= 2 && !input.confirmed) {
-          return `Prima di creare il task "${input.title}", mancano alcune informazioni:\n` +
+          const autoNote = autoAssignedName
+            ? `\n💡 Assegnatario auto-selezionato: ${autoAssignedName} (workload ${autoAssignPct}%)`
+            : "";
+          return `Prima di creare il task "${input.title}", mancano alcune informazioni:${autoNote}\n` +
             missingFields.map((f) => `- ${f}`).join("\n") +
             `\n\nVuoi procedere con i default o preferisci specificarli?`;
         }
 
-        let assignedTo: string | null = null;
+        // Resolve assignee: explicit name overrides auto-assign
+        let assignedTo: string | null = autoAssignedId;
         if (input.assigned_to_name) {
           const [emp] = await db.select({ id: employees.id }).from(employees)
             .where(sql`${employees.name} ILIKE ${"%" + input.assigned_to_name + "%"}`).limit(1);
@@ -844,6 +876,7 @@ ${JSON.stringify(data, null, 2)}`;
             return `Employee "${input.assigned_to_name}" non trovato. Dipendenti disponibili: ${names || "nessuno registrato"}.`;
           }
           assignedTo = emp.id;
+          autoAssignedName = null; // explicit — clear auto flag
         }
 
         const [newTask] = await db.insert(tasks).values({
@@ -907,15 +940,26 @@ ${JSON.stringify(data, null, 2)}`;
 
         // Also notify on Slack
         const notifChannel = getNotificationsChannel();
+        const effectiveAssigneeName = input.assigned_to_name ?? autoAssignedName;
         if (notifChannel) {
-          const assignee = input.assigned_to_name ? ` (assegnato a ${input.assigned_to_name})` : "";
+          const assigneeLabel = effectiveAssigneeName
+            ? ` (assegnato a ${effectiveAssigneeName}${autoAssignedName ? " — auto" : ""})`
+            : "";
           await sendSlackMessage(
             notifChannel,
-            `📋 Nuovo task: *${input.title}*${assignee} — Priority: ${input.priority ?? "medium"}`,
+            `📋 Nuovo task: *${input.title}*${assigneeLabel} — Priority: ${input.priority ?? "medium"}`,
           ).catch(() => {});
         }
 
-        return `Task "${input.title}" creato con successo${input.assigned_to_name ? ` e assegnato a ${input.assigned_to_name}` : ""}. ${notifChannel ? "Notifica inviata su Slack." : ""}${isNotionConfigured() ? " Sincronizzato su Notion." : ""}`;
+        // Log autonomous assignment
+        if (autoAssignedName && newTask?.id) {
+          logBotAction("task_auto_assigned", `Task "${input.title}" auto-assegnato a ${autoAssignedName} (workload ${autoAssignPct}%)`, { taskId: newTask.id, assignee: autoAssignedName }).catch(() => {});
+        }
+
+        const assignNote = effectiveAssigneeName
+          ? ` e assegnato a ${effectiveAssigneeName}${autoAssignedName ? ` (auto-selezionato — workload ${autoAssignPct}%)` : ""}`
+          : "";
+        return `Task "${input.title}" creato con successo${assignNote}. ${notifChannel ? "Notifica inviata su Slack." : ""}${isNotionConfigured() ? " Sincronizzato su Notion." : ""}`;
       }
 
       if (name === "send_slack_notification") {

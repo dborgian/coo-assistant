@@ -7,6 +7,7 @@ import type { GoogleAuth } from "../core/google-auth.js";
 import { config } from "../config.js";
 import { db } from "../models/database.js";
 import { messageLogs } from "../models/schema.js";
+import { offerDraftResponse } from "./draft-responder.js";
 import { logger } from "../utils/logger.js";
 
 export interface EmailSummary {
@@ -117,6 +118,17 @@ export async function checkImportantEmails(): Promise<void> {
         .join("\n");
 
       await sendOwnerNotification(msg);
+
+      // Offer draft reply for emails that need a response
+      if (classification.needs_reply) {
+        offerDraftResponse({
+          emailId: email.id,
+          from: email.from,
+          subject: email.subject,
+          snippet: email.snippet,
+          urgency: classification.urgency,
+        }).catch((err) => logger.warn({ err, emailId: email.id }, "offerDraftResponse failed"));
+      }
     }
   }
 }

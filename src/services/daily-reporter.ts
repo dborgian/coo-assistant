@@ -7,6 +7,7 @@ import { getTodayEvents } from "./calendar-sync.js";
 import { getUnreadImportantEmails } from "./email-manager.js";
 import { getNotionWorkspaceSummary, isNotionConfigured } from "./notion-sync.js";
 import { getTeamWorkload } from "./workload-tracker.js";
+import { computeHealthScore, formatHealthScore } from "./health-score.js";
 import { logger } from "../utils/logger.js";
 
 export async function generateAndSendDailyReport(): Promise<void> {
@@ -27,11 +28,12 @@ export async function generateAndSendDailyReport(): Promise<void> {
     .where(sql`${messageLogs.receivedAt}::date = ${today}`);
   const todayMessagesCount = todayMsgRow?.count ?? 0;
 
-  // Fetch calendar events, emails, and Notion data
-  const [calendarEvents, importantEmails, notionData] = await Promise.all([
+  // Fetch calendar events, emails, Notion data, and health score in parallel
+  const [calendarEvents, importantEmails, notionData, healthScore] = await Promise.all([
     getTodayEvents(),
     getUnreadImportantEmails(10),
     isNotionConfigured() ? getNotionWorkspaceSummary().catch((err) => { logger.error({ err }, "Notion fetch failed in report"); return null; }) : Promise.resolve(null),
+    computeHealthScore().catch(() => null),
   ]);
 
   // Slack messages today
@@ -92,6 +94,11 @@ export async function generateAndSendDailyReport(): Promise<void> {
       slack_messages_today: slackMsgs.length,
     },
     team_workload: await getTeamWorkload().catch(() => []),
+    health_score: healthScore ? {
+      score: healthScore.score,
+      label: healthScore.label,
+      components: healthScore.components,
+    } : null,
   };
 
   const reportContent = await agent.generateDailyReport(reportData);
@@ -105,12 +112,14 @@ export async function generateAndSendDailyReport(): Promise<void> {
 
   // Send via Slack
   try {
-    if (reportContent.length > 4000) {
-      for (let i = 0; i < reportContent.length; i += 4000) {
-        await sendOwnerNotification(reportContent.slice(i, i + 4000));
+    const healthHeader = healthScore ? `${formatHealthScore(healthScore)}\n\n` : "";
+    const fullReport = healthHeader + reportContent;
+    if (fullReport.length > 4000) {
+      for (let i = 0; i < fullReport.length; i += 4000) {
+        await sendOwnerNotification(fullReport.slice(i, i + 4000));
       }
     } else {
-      await sendOwnerNotification(reportContent);
+      await sendOwnerNotification(fullReport);
     }
     logger.info({ date: today }, "Daily report sent");
   } catch (err) {

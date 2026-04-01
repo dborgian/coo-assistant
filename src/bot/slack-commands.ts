@@ -24,6 +24,7 @@ import { uploadFileToDrive } from "../services/drive-manager.js";
 import { getMonitoredSlackChannels, addMonitoredSlackChannel, removeMonitoredSlackChannel } from "./slack-monitor.js";
 import { buildDashboardBlocks } from "./slack-dashboard.js";
 import { processMeetingDocById } from "../services/meeting-notes.js";
+import { getRecentBotActions } from "../services/bot-actions.js";
 import type { SlackAuthUser } from "./slack-monitor.js";
 
 type ResolveFn = (slackId: string) => Promise<SlackAuthUser | null>;
@@ -524,6 +525,31 @@ export function registerSlashCommands(slackApp: SlackApp, resolveUser: ResolveFn
     }
   });
 
+  // /coo-audit — recent bot autonomous actions (owner/admin only)
+  slackApp.command("/coo-audit", async ({ ack, command, respond }) => {
+    await ack();
+    try {
+      const user = await resolveUser(command.user_id);
+      if (!user || user.role === "viewer") {
+        await respond("Accesso negato. Solo owner e admin.");
+        return;
+      }
+      const actions = await getRecentBotActions(20);
+      if (!actions.length) {
+        await respond("Nessuna azione autonoma registrata.");
+        return;
+      }
+      const lines = actions.map((a) => {
+        const ts = a.detectedAt ? new Date(a.detectedAt).toLocaleString("it-IT", { timeZone: "Europe/Rome", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—";
+        return `• \`${ts}\` *[${a.actionType}]* ${a.description}`;
+      });
+      await respond(`*COO Assistant — Azioni Autonome (ultime ${actions.length})*\n\n${lines.join("\n")}`);
+    } catch (err) {
+      logger.error({ err }, "/coo-audit failed");
+      await respond("Errore nel caricamento dell'audit log.");
+    }
+  });
+
   // /coo-help — role-aware command list
   slackApp.command("/coo-help", async ({ ack, command, respond }) => {
     await ack();
@@ -549,7 +575,8 @@ export function registerSlashCommands(slackApp: SlackApp, resolveUser: ResolveFn
       const ownerCmds =
         "*/coo-add-employee* [nome] [email] [ruolo] [access:...] — Aggiungi dipendente\n" +
         "*/coo-add-client* [nome] [azienda] [email] — Aggiungi cliente\n" +
-        "*/coo-slack-monitor* [list|add|remove] — Configura monitoraggio\n";
+        "*/coo-slack-monitor* [list|add|remove] — Configura monitoraggio\n" +
+        "*/coo-audit* — Log azioni autonome del bot\n";
       let text = "*COO Assistant — Comandi*\n\n" + viewerCmds;
       if (role === "admin" || role === "owner") text += "\n" + adminCmds;
       if (role === "owner") text += "\n" + ownerCmds;
