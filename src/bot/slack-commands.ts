@@ -26,6 +26,7 @@ import { buildDashboardBlocks } from "./slack-dashboard.js";
 import { processMeetingDocById } from "../services/meeting-notes.js";
 import { getRecentBotActions } from "../services/bot-actions.js";
 import { computeHealthScore, formatHealthScore } from "../services/health-score.js";
+import { getTeamWorkload, type WorkloadSummary } from "../services/workload-tracker.js";
 import { muteNotif, unmuteNotif, getMutedTypes, ALL_NOTIF_TYPES } from "../utils/notification-prefs.js";
 import type { NotifType } from "../utils/notification-prefs.js";
 import type { SlackAuthUser } from "./slack-monitor.js";
@@ -528,6 +529,48 @@ export function registerSlashCommands(slackApp: SlackApp, resolveUser: ResolveFn
     }
   });
 
+  // /coo-team — team workload overview
+  slackApp.command("/coo-team", async ({ ack, command, respond }) => {
+    await ack();
+    try {
+      const user = await resolveUser(command.user_id);
+      if (!user || user.role === "viewer") { await respond("Accesso negato."); return; }
+
+      const now = new Date();
+      const [teamEmployees, workload] = await Promise.all([
+        db.select({ id: employees.id, name: employees.name, role: employees.role, isActive: employees.isActive })
+          .from(employees).where(eq(employees.isActive, true)),
+        getTeamWorkload().catch(() => [] as WorkloadSummary[]),
+      ]);
+
+      if (!teamEmployees.length) { await respond("Nessun dipendente attivo."); return; }
+
+      // Build per-employee task counts
+      const empTasks = await Promise.all(teamEmployees.map(async (emp) => {
+        const [activeRow] = await db.select({ count: sql<number>`count(*)` }).from(tasks)
+          .where(and(eq(tasks.assignedTo, emp.id), inArray(tasks.status, ["pending", "in_progress"])));
+        const [overdueRow] = await db.select({ count: sql<number>`count(*)` }).from(tasks)
+          .where(and(eq(tasks.assignedTo, emp.id), inArray(tasks.status, ["pending", "in_progress"]), lt(tasks.dueDate, now)));
+        return { id: emp.id, name: emp.name, role: emp.role, active: Number(activeRow?.count ?? 0), overdue: Number(overdueRow?.count ?? 0) };
+      }));
+
+      const workloadMap = new Map(workload.map((w) => [w.employeeName, w]));
+
+      const lines = empTasks.map((e) => {
+        const w = workloadMap.get(e.name);
+        const pct = w ? `${Math.round(w.workloadScore * 100)}%` : "—";
+        const bar = w ? ("█".repeat(Math.round(w.workloadScore * 5)) + "░".repeat(5 - Math.round(w.workloadScore * 5))) : "─────";
+        const overdueNote = e.overdue ? ` ⚠️ ${e.overdue} scaduti` : "";
+        return `*${e.name}* _(${e.role})_\n  ${bar} ${pct} workload • ${e.active} task attivi${overdueNote}`;
+      });
+
+      await respond(`*Team Overview — ${now.toLocaleDateString("it-IT")}*\n━━━━━━━━━━━━━━━━━━━━━\n${lines.join("\n\n")}`);
+    } catch (err) {
+      logger.error({ err }, "/coo-team failed");
+      await respond("Errore nel caricamento del team.");
+    }
+  });
+
   // /coo-health — quick health score on demand
   slackApp.command("/coo-health", async ({ ack, command, respond }) => {
     await ack();
@@ -696,6 +739,7 @@ export function registerSlashCommands(slackApp: SlackApp, resolveUser: ResolveFn
         "*/coo-tasks* [overdue] — Task attivi\n" +
         "*/coo-status* — Status operativo\n";
       const adminCmds =
+        "*/coo-team* — Workload e stato del team\n" +
         "*/coo-health* — Health score operativo\n" +
         "*/coo-commitments* — Commitment aperti\n" +
         "*/coo-recap* [ore] — Digest AI on-demand (default 24h)\n" +

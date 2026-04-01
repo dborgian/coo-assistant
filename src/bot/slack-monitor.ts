@@ -164,7 +164,19 @@ async function handleSlackQuery(
 ): Promise<void> {
   const user = await resolveSlackUser(slackUserId);
   if (!user) {
-    await say({ text: "Non sei registrato nel sistema. Chiedi all'admin di aggiungere il tuo Slack Member ID.", ...(threadTs ? { thread_ts: threadTs } : {}) });
+    await say({
+      text: [
+        "Non sei ancora registrato nel sistema COO Assistant.",
+        "",
+        "*Come procedere:*",
+        "1. Chiedi all'admin (owner) di aggiungerti con `/coo-add-employee`",
+        "2. Una volta registrato, usa `/coo-connect-google` per collegare il tuo Google Calendar",
+        "3. Poi potrai usare `/coo-dashboard`, `/coo-tasks` e chattare direttamente con me",
+        "",
+        "_Il tuo Slack Member ID è: `" + slackUserId + "`_ — comunicalo all'admin se necessario.",
+      ].join("\n"),
+      ...(threadTs ? { thread_ts: threadTs } : {}),
+    });
     return;
   }
 

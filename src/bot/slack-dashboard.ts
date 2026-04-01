@@ -125,6 +125,12 @@ export async function buildDashboardBlocks(
         { type: "button", text: { type: "plain_text", text: "📜 History" }, action_id: "dash:history" },
       ],
     },
+    {
+      type: "actions",
+      elements: [
+        { type: "button", text: { type: "plain_text", text: "🔄 Aggiorna" }, action_id: "dash:refresh" },
+      ],
+    },
   ];
 
   return blocks;
@@ -133,22 +139,25 @@ export async function buildDashboardBlocks(
 /** Register all dashboard action handlers on the Slack app. */
 export function registerDashboardActions(slackApp: SlackApp, resolveUser: (slackId: string) => Promise<{ employeeId: string; role: AccessRole; name: string } | null>): void {
 
-  // Back to dashboard
-  slackApp.action("dash:back", async ({ ack, body, client }) => {
+  // Back to dashboard / Refresh dashboard (same logic)
+  async function handleDashRefresh(ack: () => Promise<void>, body: any, client: any): Promise<void> {
     await ack();
     try {
-      const user = await resolveUser((body as any).user.id);
+      const user = await resolveUser(body.user.id);
       const blocks = await buildDashboardBlocks(user?.role ?? "viewer", user?.employeeId ?? null);
       await client.chat.update({
-        channel: (body as any).container.channel_id,
-        ts: (body as any).container.message_ts,
+        channel: body.container.channel_id,
+        ts: body.container.message_ts,
         text: "COO Dashboard",
         blocks,
       });
     } catch (err) {
-      logger.error({ err }, "dash:back failed");
+      logger.error({ err }, "dash refresh failed");
     }
-  });
+  }
+
+  slackApp.action("dash:back", ({ ack, body, client }) => handleDashRefresh(ack, body, client));
+  slackApp.action("dash:refresh", ({ ack, body, client }) => handleDashRefresh(ack, body, client));
 
   // Tasks
   slackApp.action("dash:tasks", async ({ ack, body, client }) => {

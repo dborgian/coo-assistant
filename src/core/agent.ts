@@ -14,6 +14,7 @@ import { getAuthForEmployee, getGoogleAuth, getUserGoogleAuth } from "./google-a
 import type { GoogleAuth } from "./google-auth.js";
 import { generateDailyReportPdf, generateEmployeeReportPdf, generateWeeklyReportPdf, type DailyReportData } from "../services/pdf-generator.js";
 import { sendSlackMessage, getNotificationsChannel } from "../bot/slack-monitor.js";
+import { sendEmployeeNotification } from "../utils/notify.js";
 import { getTeamWorkload } from "../services/workload-tracker.js";
 import { getTeamCapacity, suggestAssignment } from "../services/capacity-planner.js";
 import { rescheduleTask, unscheduleTask } from "../services/auto-scheduler.js";
@@ -22,6 +23,9 @@ import { createGoogleTask, completeGoogleTask, updateGoogleTask, deleteGoogleTas
 import { getProjectETA } from "../services/project-eta.js";
 import { addNotionComment, createNotionProject, createNotionMeetingAction, updateNotionTaskProperties, archiveNotionPage } from "../services/notion-sync.js";
 import { getCommitments } from "../services/commitment-tracker.js";
+import { computeHealthScore, formatHealthScore } from "../services/health-score.js";
+import { muteNotif, unmuteNotif, getMutedTypes, ALL_NOTIF_TYPES } from "../utils/notification-prefs.js";
+import { getRecentBotActions } from "../services/bot-actions.js";
 import { getTeamSentiment } from "../services/sentiment-analyzer.js";
 import { getCommunicationOverview } from "../services/communication-patterns.js";
 import { queryKnowledge } from "../services/knowledge-base.js";
@@ -94,6 +98,9 @@ AZIONI CHE PUOI ESEGUIRE (usa i tools quando l'utente lo chiede):
 - Vedere la capacita del team nei prossimi 5 giorni (get_team_capacity)
 - Suggerire a chi assegnare un task (suggest_assignment)
 - Vedere promesse/commitment del team e se sono stati mantenuti (get_commitments)
+- Vedere l'health score operativo con breakdown dettagliato (get_health_score)
+- Generare un recap AI delle ultime N ore di attivita' (get_recap)
+- Gestire le preferenze notifiche personali — silenziare/riattivare tipi (manage_notifications)
 - Analizzare il morale e sentiment del team (get_team_sentiment)
 - Vedere pattern di comunicazione, tempi di risposta, employee silenziosi (get_communication_patterns)
 - Consultare la knowledge base aziendale (query_knowledge_base)
@@ -818,10 +825,42 @@ ${JSON.stringify(data, null, 2)}`;
         required: ["decision_text"],
       },
     },
+    {
+      name: "get_health_score",
+      description: "Get the operational health score (0-100) with breakdown: task completion rate, overdue ratio, team workload balance, open commitments. Use when user asks: 'come sta il team?', 'health score', 'stato operativo', 'salute aziendale', 'mostra l\\'health score', '/coo-health'.",
+      input_schema: {
+        type: "object" as const,
+        properties: {},
+        required: [],
+      },
+    },
+    {
+      name: "get_recap",
+      description: "Generate an AI-powered operational recap for the last N hours: completed tasks, new tasks, Slack activity, bot actions. Use when user asks: 'recap', 'riassunto', 'cosa è successo', 'fammi il punto', 'situazione delle ultime X ore', 'digest delle ultime 24h'.",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          hours: { type: "number", description: "Hours to look back (default 24, max 72)" },
+        },
+        required: [],
+      },
+    },
+    {
+      name: "manage_notifications",
+      description: "List, mute, or unmute personal notification types. Types: escalations, email_alerts, proactive, task_reminders, meeting_notes. Use when user says: 'silenzia le notifiche escalation', 'disattiva le email alert', 'riattiva i reminder', 'mostra preferenze notifiche', 'quali notifiche ho silenziato?'.",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          action: { type: "string", enum: ["list", "mute", "unmute"], description: "Action (default: list)" },
+          type: { type: "string", enum: ["escalations", "email_alerts", "proactive", "task_reminders", "meeting_notes"], description: "Notification type to mute/unmute" },
+        },
+        required: [],
+      },
+    },
   ];
 
   // --- Execute a tool call ---
-  private async executeTool(name: string, input: Record<string, any>, userAuth?: GoogleAuth | null, userTz?: string, collectedFiles?: Array<{ buffer: Buffer; filename: string }>): Promise<string> {
+  private async executeTool(name: string, input: Record<string, any>, userAuth?: GoogleAuth | null, userTz?: string, collectedFiles?: Array<{ buffer: Buffer; filename: string }>, slackUserId?: string): Promise<string> {
     try {
       if (name === "create_task") {
         // Auto-assign: if no assignee specified, pick the least-loaded available employee
@@ -936,6 +975,12 @@ ${JSON.stringify(data, null, 2)}`;
               }
             }
           }
+        }
+
+        // Direct DM to assignee when no due_date (tiered notification handles the due_date case)
+        if (assignedTo && !input.due_date) {
+          const prioLabel = input.priority ?? "medium";
+          sendEmployeeNotification(assignedTo, `📋 Nuovo task assegnato a te: *${input.title}* (priorità: ${prioLabel})`).catch(() => {});
         }
 
         // Also notify on Slack
@@ -1888,6 +1933,60 @@ Genera 5-10 task concreti e actionable.`,
           : `Errore nella risposta all'email.`;
       }
 
+      if (name === "get_health_score") {
+        const hs = await computeHealthScore();
+        return formatHealthScore(hs) +
+          `\n\nDettaglio componenti:\n• Completamento task (settimana): ${hs.components.completionRate}%\n• Task attivi non in ritardo: ${hs.components.overdueRatio}%\n• Bilanciamento carico team: ${hs.components.workloadBalance}%\n• Salute commitment aperti: ${hs.components.commitmentHealth}%`;
+      }
+
+      if (name === "get_recap") {
+        const hours = Math.min(Math.max(1, input.hours ?? 24), 72);
+        const since = new Date(Date.now() - hours * 60 * 60 * 1000);
+        const [completedTasks, newTasks, slackMsgs, botActions] = await Promise.all([
+          db.select({ title: tasks.title, assignedTo: tasks.assignedTo }).from(tasks)
+            .where(and(eq(tasks.status, "done"), gte(tasks.updatedAt, since))),
+          db.select({ title: tasks.title, priority: tasks.priority }).from(tasks)
+            .where(gte(tasks.createdAt, since)).limit(20),
+          db.select({ count: sql<number>`count(*)` }).from(messageLogs)
+            .where(and(eq(messageLogs.source, "slack"), gte(messageLogs.receivedAt, since))),
+          getRecentBotActions(10),
+        ]);
+        return this.think(
+          `Genera un recap operativo conciso delle ultime ${hours} ore. Sii diretto e utile come un COO che fa il punto al founder. Max 500 caratteri.`,
+          {
+            period_hours: hours,
+            tasks_completed: completedTasks.length,
+            tasks_created: newTasks.length,
+            slack_messages: Number(slackMsgs[0]?.count ?? 0),
+            bot_actions: botActions.slice(0, 5).map((a) => `[${a.actionType}] ${a.description}`),
+            completed_titles: completedTasks.slice(0, 5).map((t) => t.title),
+            new_task_titles: newTasks.slice(0, 5).map((t) => `${t.title} (${t.priority})`),
+          },
+        );
+      }
+
+      if (name === "manage_notifications") {
+        if (!slackUserId) return "Impossibile identificare l'utente per gestire le preferenze notifiche.";
+        const action = (input.action ?? "list") as string;
+        if (action === "list") {
+          const muted = await getMutedTypes(slackUserId);
+          const lines = ALL_NOTIF_TYPES.map((t) => `• \`${t}\` — ${muted.has(t) ? "🔕 silenziato" : "🔔 attivo"}`);
+          return `*Preferenze Notifiche*\n\n${lines.join("\n")}\n\nPer modificarle chiedi es. "silenzia le escalation" o "riattiva i task_reminders".`;
+        }
+        if (!input.type || !ALL_NOTIF_TYPES.includes(input.type as any)) {
+          return `Tipo non valido. Tipi disponibili: ${ALL_NOTIF_TYPES.join(", ")}`;
+        }
+        if (action === "mute") {
+          await muteNotif(slackUserId, input.type);
+          return `🔕 Notifiche \`${input.type}\` silenziate.`;
+        }
+        if (action === "unmute") {
+          await unmuteNotif(slackUserId, input.type);
+          return `🔔 Notifiche \`${input.type}\` riattivate.`;
+        }
+        return "Azione non valida. Usa: list, mute, unmute.";
+      }
+
       return `Tool "${name}" non riconosciuto.`;
     } catch (err: any) {
       logger.error({ err, tool: name }, "Tool execution failed");
@@ -2086,7 +2185,7 @@ Genera 5-10 task concreti e actionable.`,
       for (const block of toolUseBlocks) {
         if (block.type === "tool_use") {
           logger.info({ tool: block.name, input: block.input }, "AI executing tool");
-          const result = await this.executeTool(block.name, block.input as Record<string, any>, userAuth, userTz, collectedFiles);
+          const result = await this.executeTool(block.name, block.input as Record<string, any>, userAuth, userTz, collectedFiles, chatId);
           toolResults.push({ type: "tool_result", tool_use_id: block.id, content: result });
         }
       }

@@ -6,6 +6,28 @@ import { sendOwnerNotification } from "../utils/notify.js";
 import { logger } from "../utils/logger.js";
 
 export async function checkCommitmentFulfillment(): Promise<void> {
+  // Auto-expire commitments older than 30 days (mark as "expired" to keep history clean)
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+  try {
+    const expired = await db
+      .update(intelligenceEvents)
+      .set({ status: "expired" })
+      .where(
+        and(
+          eq(intelligenceEvents.type, "commitment"),
+          eq(intelligenceEvents.status, "open"),
+          lte(intelligenceEvents.detectedAt, thirtyDaysAgo),
+        ),
+      )
+      .returning({ id: intelligenceEvents.id });
+    if (expired.length) {
+      logger.info({ count: expired.length }, "Auto-expired stale commitments");
+    }
+  } catch (err) {
+    logger.warn({ err }, "Auto-expire commitments failed");
+  }
+
   const twoDaysAgo = new Date();
   twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
 
