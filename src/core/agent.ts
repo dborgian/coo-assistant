@@ -9,6 +9,7 @@ import { sendTieredNotification, getTargetLevel } from "../services/task-reminde
 import { getUnreadImportantEmails, sendEmail, searchEmails, forwardEmail, replyToEmail } from "../services/email-manager.js";
 import { getNotionWorkspaceSummary, isNotionConfigured, createNotionTask, searchNotion, updateNotionTaskStatus, discoverNotionUsers, extractNotionPageId } from "../services/notion-sync.js";
 import { parseDateKeywords, findEmployeeInQuery, getActivityByDateRange, getEmployeeActivity } from "../services/history-query.js";
+import { takeScreenshot } from "../services/screenshot.js";
 import { listDriveFiles, searchDriveFiles, uploadFileToDrive } from "../services/drive-manager.js";
 import { getAuthForEmployee, getGoogleAuth, getUserGoogleAuth } from "./google-auth.js";
 import type { GoogleAuth } from "./google-auth.js";
@@ -880,6 +881,18 @@ ${JSON.stringify(data, null, 2)}`;
           type: { type: "string", enum: ["escalations", "email_alerts", "proactive", "task_reminders", "meeting_notes"], description: "Notification type to mute/unmute" },
         },
         required: [],
+      },
+    },
+    {
+      name: "take_screenshot",
+      description: "Take a screenshot of any URL (webpage, Notion page, Google Doc, app dashboard, etc.) and attach it to the response. Only works with publicly accessible URLs.",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          url: { type: "string", description: "Full URL to screenshot (must be publicly accessible)" },
+          full_page: { type: "boolean", description: "Capture full page scroll height (default: false = viewport only)" },
+        },
+        required: ["url"],
       },
     },
   ];
@@ -2073,6 +2086,18 @@ Genera 5-10 task concreti e actionable.`,
           return `[${ts}] [${a.actionType}] ${a.description}`;
         });
         return `Azioni autonome recenti (${actions.length}):\n${lines.join("\n")}`;
+      }
+
+      if (name === "take_screenshot") {
+        if (!input.url) return "URL richiesto per lo screenshot.";
+        try {
+          const buffer = await takeScreenshot(input.url, { fullPage: !!input.full_page });
+          const filename = `screenshot-${Date.now()}.png`;
+          collectedFiles?.push({ buffer, filename });
+          return `Screenshot di ${input.url} catturato.`;
+        } catch (err: any) {
+          return `Screenshot fallito per ${input.url}: ${err.message}`;
+        }
       }
 
       return `Tool "${name}" non riconosciuto.`;

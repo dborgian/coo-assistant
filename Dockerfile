@@ -1,5 +1,5 @@
 # ── Build stage ──
-FROM node:20-alpine AS builder
+FROM node:20-slim AS builder
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
@@ -8,12 +8,15 @@ COPY src/ ./src/
 RUN npm run build
 
 # ── Production stage ──
-FROM node:20-alpine
+FROM node:20-slim
 WORKDIR /app
 ENV NODE_ENV=production
 
 COPY package*.json ./
 RUN npm ci --omit=dev
+
+# Install Playwright Chromium + system dependencies
+RUN npx playwright install chromium --with-deps
 
 COPY --from=builder /app/dist ./dist
 COPY scripts/ ./scripts/

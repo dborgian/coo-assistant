@@ -61,6 +61,9 @@ export const TOOL_PERMISSIONS: Record<string, AccessRole[]> = {
   brain_status: ["owner", "admin"],
   process_meeting_notes: ["owner", "admin"],
 
+  // SCREENSHOT
+  take_screenshot: ["owner", "admin"],
+
   // VISIBILITY + CONTROL (Phase 2B/2C)
   get_health_score: ["owner", "admin"],
   get_recap: ["owner", "admin"],
