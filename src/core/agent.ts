@@ -889,7 +889,7 @@ ${JSON.stringify(data, null, 2)}`;
     },
     {
       name: "take_screenshot",
-      description: "Take a screenshot of a publicly accessible URL and attach it to the response. IMPORTANT: does NOT work for Google Docs, Google Drive, Notion, Slack, or any page that requires login — those will redirect to a login screen. For Google Docs/Drive content use search_drive or get_calendar_events; for Notion use notion_action.",
+      description: "Take a screenshot of a URL and attach it to the response. Works for public pages and private pages if the user has a saved browser session (run npm run browser:login to set one up). For Google Docs/Drive content prefer search_drive; for Notion data prefer notion_action.",
       input_schema: {
         type: "object" as const,
         properties: {
@@ -2185,7 +2185,7 @@ Genera 5-10 task concreti e actionable.`,
       if (name === "take_screenshot") {
         if (!input.url) return "URL richiesto per lo screenshot.";
         try {
-          const buffer = await takeScreenshot(input.url, { fullPage: !!input.full_page });
+          const buffer = await takeScreenshot(input.url, { fullPage: !!input.full_page, slackUserId });
           const filename = `screenshot-${Date.now()}.png`;
           collectedFiles?.push({ buffer, filename });
           return `Screenshot di ${input.url} catturato.`;

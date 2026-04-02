@@ -18,7 +18,12 @@ import { config as loadDotenv } from "dotenv";
 
 loadDotenv();
 
-const REDIS_SESSION_KEY = "browser:session_state";
+const REDIS_SESSION_KEY_PREFIX = "browser:session_state";
+
+// Parse --user <slack_member_id> from argv
+const userArgIdx = process.argv.indexOf("--user");
+const slackUserId = userArgIdx !== -1 ? process.argv[userArgIdx + 1] : undefined;
+const redisKey = slackUserId ? `${REDIS_SESSION_KEY_PREFIX}:${slackUserId}` : REDIS_SESSION_KEY_PREFIX;
 
 function waitForEnter(prompt: string): Promise<void> {
   return new Promise((resolve) => {
@@ -32,6 +37,14 @@ function waitForEnter(prompt: string): Promise<void> {
   if (!redisUrl) {
     console.error("❌  REDIS_URL non trovato nel .env — impossibile salvare la sessione.");
     process.exit(1);
+  }
+
+  if (slackUserId) {
+    console.log(`👤  Modalità per-utente: sessione salvata per Slack ID "${slackUserId}"`);
+    console.log(`    Chiave Redis: ${redisKey}\n`);
+  } else {
+    console.log("🌐  Modalità condivisa: sessione salvata come fallback per tutti gli utenti.");
+    console.log(`    Chiave Redis: ${redisKey}\n`);
   }
 
   console.log("🌐  Avvio Chromium con interfaccia grafica...");
@@ -51,10 +64,10 @@ function waitForEnter(prompt: string): Promise<void> {
   await browser.close();
 
   const redis = new Redis(redisUrl);
-  await redis.set(REDIS_SESSION_KEY, JSON.stringify(state));
+  await redis.set(redisKey, JSON.stringify(state));
   await redis.quit();
 
-  console.log(`\n✅  Sessione salvata: ${state.cookies.length} cookies, ${state.origins.length} origini.`);
+  console.log(`\n✅  Sessione salvata (${redisKey}): ${state.cookies.length} cookies, ${state.origins.length} origini.`);
   console.log("    Gli screenshot di pagine private funzioneranno fino alla scadenza dei cookies.");
   process.exit(0);
 })();

@@ -3,7 +3,7 @@ import type { Browser } from "playwright";
 import { getRedis } from "../utils/conversation-cache.js";
 import { logger } from "../utils/logger.js";
 
-const REDIS_SESSION_KEY = "browser:session_state";
+const REDIS_SESSION_KEY_PREFIX = "browser:session_state";
 
 let browser: Browser | null = null;
 
@@ -17,14 +17,20 @@ async function getBrowser(): Promise<Browser> {
 
 /**
  * Loads saved browser session state from Redis.
- * Returns undefined if no session is saved (anonymous/public session).
- * Avoids large env vars that exceed Railway's 32KB limit.
+ * Tries per-user key first (browser:session_state:{slackUserId}), then shared fallback.
+ * Returns undefined if no session found (anonymous/public session).
  */
-async function loadStorageState(): Promise<object | undefined> {
+async function loadStorageState(slackUserId?: string): Promise<object | undefined> {
   const redis = getRedis();
   if (!redis) return undefined;
   try {
-    const raw = await redis.get(REDIS_SESSION_KEY);
+    // 1. Per-user session
+    if (slackUserId) {
+      const raw = await redis.get(`${REDIS_SESSION_KEY_PREFIX}:${slackUserId}`);
+      if (raw) return JSON.parse(raw);
+    }
+    // 2. Shared fallback session
+    const raw = await redis.get(REDIS_SESSION_KEY_PREFIX);
     if (raw) return JSON.parse(raw);
   } catch {
     logger.warn("Failed to load browser session state from Redis — using anonymous session");
@@ -33,19 +39,20 @@ async function loadStorageState(): Promise<object | undefined> {
 }
 
 /** Save browser session state to Redis (no TTL — persists until explicitly cleared) */
-export async function saveSessionState(state: object): Promise<void> {
+export async function saveSessionState(state: object, slackUserId?: string): Promise<void> {
   const redis = getRedis();
   if (!redis) throw new Error("Redis non disponibile — impossibile salvare la sessione");
-  await redis.set(REDIS_SESSION_KEY, JSON.stringify(state));
-  logger.info("Browser session state saved to Redis");
+  const key = slackUserId ? `${REDIS_SESSION_KEY_PREFIX}:${slackUserId}` : REDIS_SESSION_KEY_PREFIX;
+  await redis.set(key, JSON.stringify(state));
+  logger.info({ key }, "Browser session state saved to Redis");
 }
 
 export async function takeScreenshot(
   url: string,
-  opts?: { fullPage?: boolean; width?: number; height?: number },
+  opts?: { fullPage?: boolean; width?: number; height?: number; slackUserId?: string },
 ): Promise<Buffer> {
   const b = await getBrowser();
-  const storageState = await loadStorageState();
+  const storageState = await loadStorageState(opts?.slackUserId);
 
   const context = await b.newContext({
     viewport: { width: opts?.width ?? 1280, height: opts?.height ?? 720 },
@@ -65,7 +72,10 @@ export async function takeScreenshot(
       finalUrl.includes("slack.com/signin") ||
       (finalUrl.includes("?next=") && finalUrl.includes("login"));
     if (isLoginPage) {
-      throw new Error("La pagina richiede autenticazione. Per ora sono supportati solo URL pubblici.");
+      const userHint = opts?.slackUserId
+        ? `Esegui: npm run browser:login -- --user ${opts.slackUserId}`
+        : "Esegui: npm run browser:login -- --user <tuo_slack_id>";
+      throw new Error(`La pagina richiede autenticazione. Per abilitare screenshot di pagine private: ${userHint}`);
     }
 
     const buffer = await page.screenshot({
