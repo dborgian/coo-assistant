@@ -15,7 +15,7 @@ import { getAuthForEmployee, getGoogleAuth, getUserGoogleAuth } from "./google-a
 import type { GoogleAuth } from "./google-auth.js";
 import { generateDailyReportPdf, generateEmployeeReportPdf, generateWeeklyReportPdf, type DailyReportData } from "../services/pdf-generator.js";
 import { sendSlackMessage, getNotificationsChannel, searchSlackMessages, sendSlackThread } from "../bot/slack-monitor.js";
-import { sendEmployeeNotification, sendOwnerNotification } from "../utils/notify.js";
+import { sendSlackDM, sendEmployeeNotification, sendOwnerNotification } from "../utils/notify.js";
 import { getTeamWorkload, type WorkloadSummary } from "../services/workload-tracker.js";
 import { getTeamCapacity, suggestAssignment } from "../services/capacity-planner.js";
 import { rescheduleTask, unscheduleTask } from "../services/auto-scheduler.js";
@@ -158,6 +158,7 @@ SLACK — LINK E THREAD:
 - Per mandare un messaggio o un link in DM a qualcuno, usa send_slack_notification con recipient_name. NON usare thread_ts per i DM — thread_ts serve solo per risposte in-thread nei canali pubblici.
 - Quando devi rispondere nel thread di un messaggio in un canale, usa send_slack_notification con channel_id + thread_ts del messaggio originale (entrambi dal risultato di search_slack_message), aggiungendo mention_user se devi taggare qualcuno.
 - Se conosci gia' il channel_id e il thread_ts dal contesto della conversazione, usali direttamente senza cercare di nuovo.
+- Quando l'utente dice "rispondi nel thread" senza specificare il contenuto del messaggio, CHIEDI prima cosa vuole scrivere. NON inventare contenuto.
 
 REGOLE:
 - I dati nel context sono LIVE. Array vuoto = nessun dato, NON "non connesso"
@@ -1086,17 +1087,17 @@ ${JSON.stringify(data, null, 2)}`;
       if (name === "send_slack_notification") {
         let channelId = input.channel_id || getNotificationsChannel();
 
-        // DM a specific person by name
+        // DM a specific person by name — use conversations.open for proper DM delivery
         if (input.recipient_name) {
           const [emp] = await db.select({ slackMemberId: employees.slackMemberId, name: employees.name })
             .from(employees)
             .where(sql`${employees.name} ILIKE ${"%" + input.recipient_name + "%"}`)
             .limit(1);
           if (emp?.slackMemberId) {
-            channelId = emp.slackMemberId;
-          } else {
-            return `Employee "${input.recipient_name}" non trovato o non ha Slack collegato.`;
+            const sent = await sendSlackDM(emp.slackMemberId, input.message);
+            return sent ? `DM inviato a ${emp.name}.` : `Invio DM a ${emp.name} fallito — controlla i permessi Slack del bot.`;
           }
+          return `Employee "${input.recipient_name}" non trovato o non ha Slack collegato.`;
         }
 
         if (!channelId) return "Slack notifications channel non configurato. Imposta SLACK_NOTIFICATIONS_CHANNEL nel .env.";
