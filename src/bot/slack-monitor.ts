@@ -154,6 +154,32 @@ const WAITING_PHRASES = [
   "Sto guardando, un sec...",
 ];
 
+/** Fetch recent messages from a Slack channel/thread for context injection */
+async function fetchChannelContext(
+  channelId: string,
+  threadTs?: string,
+  limit = 5,
+): Promise<string> {
+  if (!slackApp) return "";
+  try {
+    const result = threadTs
+      ? await slackApp.client.conversations.replies({ channel: channelId, ts: threadTs, limit, inclusive: false })
+      : await slackApp.client.conversations.history({ channel: channelId, limit });
+    const msgs = (result.messages ?? [])
+      .filter((m: any) => m.user && m.user !== slackBotUserId && m.text)
+      .reverse(); // chronological order
+    if (!msgs.length) return "";
+    const lines = msgs.map((m: any) => {
+      const name = userNameCache.get(m.user) ?? m.user;
+      return `[${name}]: ${m.text}`;
+    });
+    return "\n\nCONTESTO RECENTE DEL CANALE:\n" + lines.join("\n");
+  } catch (err) {
+    logger.warn({ err, channelId }, "Failed to fetch channel context");
+    return "";
+  }
+}
+
 async function handleSlackQuery(
   text: string,
   slackUserId: string,
@@ -349,11 +375,13 @@ export async function startSlackMonitor(): Promise<boolean> {
 
         // Bot @mention — respond with AI (skip monitoring pipeline to avoid double-reply)
         const cleanText = text.replace(/<@[A-Z0-9]+>/g, "").trim();
-        if (!cleanText) {
-          await say({ text: "Ciao! Chiedimi quello che vuoi.", thread_ts: msgTs });
-          return;
-        }
-        await handleSlackQuery(cleanText, userId, say, channelId, msgTs, msg.thread_ts ?? msgTs);
+        const channelCtx = channelId ? await fetchChannelContext(channelId, msg.thread_ts, 5) : "";
+        const queryText = cleanText
+          ? cleanText + channelCtx
+          : channelCtx
+            ? "L'utente ti ha menzionato nel canale. Analizza il contesto recente e rispondi in modo utile." + channelCtx
+            : "L'utente ti ha menzionato. Salutalo e chiedi come puoi aiutare.";
+        await handleSlackQuery(queryText, userId, say, channelId, msgTs, msg.thread_ts ?? msgTs);
       }
     } catch (err) {
       logger.error({ err }, "Error processing Slack message");

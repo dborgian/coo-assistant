@@ -126,6 +126,7 @@ GESTIONE AMBIGUITA':
 - Se un tool restituisce un errore di employee non trovato, mostra la lista dei dipendenti disponibili e chiedi di specificare.
 - Se la data e' ambigua (es. "venerdì", "la prossima settimana"), usa current_datetime dal context per calcolarla esattamente.
 - REGOLA FERREA create_task / notion_action create_task: se mancano priority O due_date O assignee, NON impostare confirmed=true. Il tool restituira' una lista dei campi mancanti — mostrala all'utente e chiedi conferma. Solo dopo risposta esplicita dell'utente chiama il tool con confirmed=true (e con i valori specificati, se li ha forniti).
+- REGOLA FERREA send_email / forward_email / reply_email: NON chiamare il tool se mancano destinatario, oggetto, O corpo dell'email. Prima chiedi all'utente le informazioni mancanti. Solo dopo aver raccolto TUTTI i parametri necessari, chiama il tool.
 
 ESEMPI:
 - Utente: "crea task report" → se manca l'assignee o la scadenza, chiedi: "A chi assegno il task e entro quando?"
@@ -349,15 +350,17 @@ ${JSON.stringify(data, null, 2)}`;
     },
     {
       name: "send_email",
-      description: "Send an email to an employee or any address. Use this for reminders, notifications, or any email communication. Look up the employee's email from context if only a name is given.",
+      description: "Send an email to an employee or any address. Prefer to_name (employee name) over to (email address) — the system resolves the correct address from the DB, avoiding hallucination errors.",
       input_schema: {
         type: "object" as const,
         properties: {
-          to: { type: "string", description: "Recipient email address" },
+          to_name: { type: "string", description: "Recipient employee name — resolves email from DB (preferred, avoids hallucination)" },
+          to: { type: "string", description: "Recipient email address (use only when to_name is unavailable or recipient is external)" },
           subject: { type: "string", description: "Email subject line" },
           body: { type: "string", description: "Email body text" },
+          cc: { type: "string", description: "CC email address (optional)" },
         },
-        required: ["to", "subject", "body"],
+        required: ["subject", "body"],
       },
     },
     {
@@ -1051,10 +1054,34 @@ ${JSON.stringify(data, null, 2)}`;
       }
 
       if (name === "send_email") {
-        const sent = await sendEmail(input.to, input.subject, input.body, userAuth);
+        let toAddress: string = input.to ?? "";
+        // Resolve from employees DB when to_name is given, or when to doesn't look like an email
+        if (input.to_name || !toAddress.includes("@")) {
+          const searchName = input.to_name || toAddress;
+          if (searchName) {
+            const empMatches = await db
+              .select({ name: employees.name, email: employees.email, googleEmail: employees.googleEmail })
+              .from(employees)
+              .where(sql`${employees.name} ILIKE ${"%" + searchName + "%"}`);
+            if (empMatches.length > 1) {
+              return `Trovati ${empMatches.length} dipendenti per "${searchName}":\n${empMatches.map((e) => `- ${e.name}: ${e.googleEmail ?? e.email ?? "nessuna email"}`).join("\n")}\nSpecifica meglio il nome.`;
+            }
+            const resolved = empMatches[0]?.googleEmail ?? empMatches[0]?.email;
+            if (resolved) {
+              toAddress = resolved;
+            } else {
+              const allEmps = await db.select({ name: employees.name, email: employees.email, googleEmail: employees.googleEmail }).from(employees).where(eq(employees.isActive, true));
+              const empList = allEmps.map((e) => `- ${e.name}: ${e.googleEmail ?? e.email ?? "nessuna email"}`).join("\n");
+              return `Dipendente "${searchName}" non trovato. Dipendenti disponibili:\n${empList}`;
+            }
+          } else {
+            return "Specifica un destinatario (to o to_name).";
+          }
+        }
+        const sent = await sendEmail(toAddress, input.subject, input.body, userAuth, input.cc);
         return sent
-          ? `Email inviata a ${input.to} con oggetto "${input.subject}".`
-          : `Invio email fallito a ${input.to} — verifica la configurazione Google (serve il scope gmail.send).`;
+          ? `Email inviata a ${toAddress} con oggetto "${input.subject}".`
+          : `Invio email fallito a ${toAddress} — verifica la configurazione Google (serve il scope gmail.send).`;
       }
 
       if (name === "update_task_status") {
@@ -1115,7 +1142,7 @@ ${JSON.stringify(data, null, 2)}`;
           const fileName = `employee-${input.employee_name.toLowerCase()}-${now.toISOString().split("T")[0]}.pdf`;
           const driveFile = await uploadFileToDrive(fileName, pdf, "application/pdf", config.DRIVE_EMPLOYEE_FOLDER_ID || undefined).catch(() => null);
           collectedFiles?.push({ buffer: pdf, filename: fileName });
-          return `Report PDF per ${input.employee_name} generato.${driveFile ? ` Salvato su Drive: ${driveFile.webViewLink}` : ""}`;
+          return `Report PDF per ${input.employee_name} generato.${driveFile && !collectedFiles?.length ? ` Salvato su Drive: ${driveFile.webViewLink}` : ""}`;
         }
 
         if (reportType === "weekly") {
@@ -1126,7 +1153,7 @@ ${JSON.stringify(data, null, 2)}`;
           const fileName = `weekly-report-${start.toISOString().split("T")[0]}.pdf`;
           const driveFile = await uploadFileToDrive(fileName, pdf, "application/pdf", config.DRIVE_DAILY_FOLDER_ID || undefined).catch(() => null);
           collectedFiles?.push({ buffer: pdf, filename: fileName });
-          return `Report PDF settimanale generato.${driveFile ? ` Salvato su Drive: ${driveFile.webViewLink}` : ""}`;
+          return `Report PDF settimanale generato.${driveFile && !collectedFiles?.length ? ` Salvato su Drive: ${driveFile.webViewLink}` : ""}`;
         }
 
         // daily
@@ -1168,7 +1195,7 @@ ${JSON.stringify(data, null, 2)}`;
         const driveFile = await uploadFileToDrive(fileName, pdf, "application/pdf", config.DRIVE_DAILY_FOLDER_ID || undefined).catch(() => null);
         collectedFiles?.push({ buffer: pdf, filename: fileName });
         await db.insert(dailyReports).values({ reportDate: today, reportType: "on_demand", content: narrative });
-        return `Report PDF giornaliero generato.${driveFile ? ` Salvato su Drive: ${driveFile.webViewLink}` : ""}`;
+        return `Report PDF giornaliero generato.${driveFile && !collectedFiles?.length ? ` Salvato su Drive: ${driveFile.webViewLink}` : ""}`;
       }
 
       if (name === "manage_team") {
@@ -1298,15 +1325,17 @@ ${JSON.stringify(data, null, 2)}`;
             const ok = await updateNotionTaskStatus(notionId, input.status);
             results.push(ok ? `status → "${input.status}"` : "aggiornamento status fallito");
           }
-          if (input.priority || input.due_date || input.assignee) {
+          if (input.priority || input.due_date || input.assignee || input.description) {
             const ok = await updateNotionTaskProperties(notionId, {
               priority: input.priority,
               dueDate: input.due_date,
               assignee: input.assignee,
+              description: input.description,
             });
             if (input.priority) results.push(ok ? `priorità → "${input.priority}"` : "aggiornamento priorità fallito");
             if (input.due_date) results.push(ok ? `deadline → ${input.due_date}` : "aggiornamento deadline fallito");
             if (input.assignee) results.push(ok ? `assegnato a ${input.assignee}` : `assegnazione a ${input.assignee} fallita (utente Notion non trovato?)`);
+            if (input.description) results.push(ok ? "descrizione aggiornata" : "aggiornamento descrizione fallito");
           }
           // Mirror changes to internal DB
           if (found[0]?.externalId) {
@@ -1323,6 +1352,7 @@ ${JSON.stringify(data, null, 2)}`;
                 .where(sql`${employees.name} ILIKE ${"%" + input.assignee + "%"}`).limit(1);
               if (assigneeEmp) dbUpdates.assignedTo = assigneeEmp.id;
             }
+            if (input.description) dbUpdates.description = input.description;
             if (Object.keys(dbUpdates).length > 1) {
               await db.update(tasks).set(dbUpdates).where(eq(tasks.externalId, found[0].externalId));
             }

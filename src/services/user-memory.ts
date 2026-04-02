@@ -19,13 +19,9 @@ import { and, eq, lt, sql } from "drizzle-orm";
 import { db } from "../models/database.js";
 import { userMemory } from "../models/schema.js";
 import { logger } from "../utils/logger.js";
-import { getRedis } from "../utils/conversation-cache.js";
 
 const extractor = new Anthropic();
 
-const EXTRACTION_TTL_SECONDS = 300; // 5 minutes
-// In-memory fallback when Redis is unavailable (resets on restart — acceptable)
-const lastExtractionAt = new Map<string, number>();
 
 export interface MemoryEntry {
   category: string;
@@ -67,25 +63,6 @@ export async function extractAndSaveMemories(chatId: string, query: string, resp
   // Skip trivial exchanges
   if ((query + response).length < 80) return;
 
-  // Rate-limit: skip if extracted in the last 5 min (Redis-persistent; falls back to in-memory Map)
-  const redis = getRedis();
-  const rateKey = `memext:${chatId}`;
-  if (redis) {
-    try {
-      const exists = await redis.exists(rateKey);
-      if (exists) return;
-      await redis.set(rateKey, "1", "EX", EXTRACTION_TTL_SECONDS);
-    } catch {
-      // Redis error — fall through to in-memory fallback
-      const now = Date.now();
-      if (now - (lastExtractionAt.get(chatId) ?? 0) < EXTRACTION_TTL_SECONDS * 1000) return;
-      lastExtractionAt.set(chatId, now);
-    }
-  } else {
-    const now = Date.now();
-    if (now - (lastExtractionAt.get(chatId) ?? 0) < EXTRACTION_TTL_SECONDS * 1000) return;
-    lastExtractionAt.set(chatId, now);
-  }
   try {
     const result = await extractor.messages.create({
       model: "claude-haiku-4-5-20251001",

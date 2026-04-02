@@ -186,6 +186,7 @@ export async function sendEmail(
   subject: string,
   body: string,
   authOverride?: GoogleAuth | null,
+  cc?: string,
 ): Promise<boolean> {
   const auth = authOverride ?? getGoogleAuth();
   if (!auth) {
@@ -209,6 +210,7 @@ export async function sendEmail(
   const rawMessage = [
     fromAddress ? `From: ${fromAddress}` : null,
     `To: ${to}`,
+    cc ? `Cc: ${cc}` : null,
     `Subject: ${encodedSubject}`,
     "Content-Type: text/plain; charset=utf-8",
     "",
