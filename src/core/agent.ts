@@ -351,15 +351,16 @@ ${JSON.stringify(data, null, 2)}`;
     },
     {
       name: "send_email",
-      description: "Send an email to an employee or any address. Prefer to_name (employee name) over to (email address) — the system resolves the correct address from the DB, avoiding hallucination errors.",
+      description: "Send an email. Prefer to_name/to_names over to — the system resolves addresses from DB, avoiding hallucination. Supports multiple recipients (comma-separated names or addresses).",
       input_schema: {
         type: "object" as const,
         properties: {
-          to_name: { type: "string", description: "Recipient employee name — resolves email from DB (preferred, avoids hallucination)" },
-          to: { type: "string", description: "Recipient email address (use only when to_name is unavailable or recipient is external)" },
+          to_name: { type: "string", description: "Recipient name(s) — comma-separated for multiple. Resolves from DB (preferred, avoids hallucination)" },
+          to: { type: "string", description: "Recipient email(s) — comma-separated for multiple. Use only for external addresses not in DB" },
           subject: { type: "string", description: "Email subject line" },
           body: { type: "string", description: "Email body text" },
-          cc: { type: "string", description: "CC email address (optional)" },
+          cc_name: { type: "string", description: "CC recipient name(s) — comma-separated for multiple. Resolves from DB (preferred)" },
+          cc: { type: "string", description: "CC email address(es) — comma-separated for multiple. Use only for external addresses not in DB" },
         },
         required: ["subject", "body"],
       },
@@ -747,13 +748,15 @@ ${JSON.stringify(data, null, 2)}`;
     },
     {
       name: "forward_email",
-      description: "Forward an email (with attachments) to someone. First use search_emails to find the email, then forward it by ID.",
+      description: "Forward an email (with attachments) to someone. Supports multiple recipients (comma-separated names or addresses).",
       input_schema: {
         type: "object" as const,
         properties: {
           email_query: { type: "string", description: "Search query to find the email (subject, sender, keywords)" },
-          to: { type: "string", description: "Recipient email address" },
-          to_name: { type: "string", description: "Recipient name (resolves email from employees table)" },
+          to_name: { type: "string", description: "Recipient name(s) — comma-separated for multiple. Resolves from DB (preferred)" },
+          to: { type: "string", description: "Recipient email(s) — comma-separated for multiple. Use only for external addresses not in DB" },
+          cc_name: { type: "string", description: "CC name(s) — comma-separated for multiple. Resolves from DB" },
+          cc: { type: "string", description: "CC email(s) — comma-separated for multiple. Use only for external addresses not in DB" },
           note: { type: "string", description: "Optional note to add at the top of the forwarded email" },
         },
         required: [],
@@ -1067,33 +1070,67 @@ ${JSON.stringify(data, null, 2)}`;
       }
 
       if (name === "send_email") {
-        let toAddress: string = input.to ?? "";
-        // Resolve from employees DB when to_name is given, or when to doesn't look like an email
-        if (input.to_name || !toAddress.includes("@")) {
-          const searchName = input.to_name || toAddress;
-          if (searchName) {
-            const empMatches = await db
-              .select({ name: employees.name, email: employees.email, googleEmail: employees.googleEmail })
-              .from(employees)
-              .where(sql`${employees.name} ILIKE ${"%" + searchName + "%"}`);
-            if (empMatches.length > 1) {
-              return `Trovati ${empMatches.length} dipendenti per "${searchName}":\n${empMatches.map((e) => `- ${e.name}: ${e.googleEmail ?? e.email ?? "nessuna email"}`).join("\n")}\nSpecifica meglio il nome.`;
+        // Helper: resolve a comma-separated list of names/emails to verified email addresses
+        async function resolveAddresses(names?: string, emails?: string, fieldLabel = "destinatario"): Promise<string | string[]> {
+          const resolved: string[] = [];
+          // First resolve any DB names
+          if (names) {
+            for (const rawName of names.split(",").map((s) => s.trim()).filter(Boolean)) {
+              const empMatches = await db
+                .select({ name: employees.name, email: employees.email, googleEmail: employees.googleEmail })
+                .from(employees)
+                .where(sql`${employees.name} ILIKE ${"%" + rawName + "%"}`);
+              if (empMatches.length > 1) {
+                return `Trovati ${empMatches.length} dipendenti per "${rawName}":\n${empMatches.map((e) => `- ${e.name}: ${e.googleEmail ?? e.email ?? "nessuna email"}`).join("\n")}\nSpecifica meglio il nome.`;
+              }
+              const addr = empMatches[0]?.googleEmail ?? empMatches[0]?.email;
+              if (addr) {
+                resolved.push(addr);
+              } else {
+                const allEmps = await db.select({ name: employees.name, email: employees.email, googleEmail: employees.googleEmail }).from(employees).where(eq(employees.isActive, true));
+                const empList = allEmps.map((e) => `- ${e.name}: ${e.googleEmail ?? e.email ?? "nessuna email"}`).join("\n");
+                return `Dipendente "${rawName}" non trovato. Dipendenti disponibili:\n${empList}`;
+              }
             }
-            const resolved = empMatches[0]?.googleEmail ?? empMatches[0]?.email;
-            if (resolved) {
-              toAddress = resolved;
-            } else {
-              const allEmps = await db.select({ name: employees.name, email: employees.email, googleEmail: employees.googleEmail }).from(employees).where(eq(employees.isActive, true));
-              const empList = allEmps.map((e) => `- ${e.name}: ${e.googleEmail ?? e.email ?? "nessuna email"}`).join("\n");
-              return `Dipendente "${searchName}" non trovato. Dipendenti disponibili:\n${empList}`;
-            }
-          } else {
-            return "Specifica un destinatario (to o to_name).";
           }
+          // Then add any raw email addresses
+          if (emails) {
+            for (const addr of emails.split(",").map((s) => s.trim()).filter(Boolean)) {
+              if (!addr.includes("@")) {
+                // Looks like a name, not an email — try DB lookup
+                const empMatches = await db
+                  .select({ name: employees.name, email: employees.email, googleEmail: employees.googleEmail })
+                  .from(employees)
+                  .where(sql`${employees.name} ILIKE ${"%" + addr + "%"}`);
+                if (empMatches.length > 1) {
+                  return `Trovati ${empMatches.length} dipendenti per "${addr}":\n${empMatches.map((e) => `- ${e.name}: ${e.googleEmail ?? e.email ?? "nessuna email"}`).join("\n")}\nSpecifica meglio il nome.`;
+                }
+                const resolved2 = empMatches[0]?.googleEmail ?? empMatches[0]?.email;
+                if (resolved2) { resolved.push(resolved2); continue; }
+                return `Nessun dipendente trovato per "${addr}" — specifica un indirizzo email valido o un nome dal DB.`;
+              }
+              resolved.push(addr);
+            }
+          }
+          if (resolved.length === 0) return `Specifica almeno un ${fieldLabel} (to o to_name).`;
+          return resolved;
         }
-        const sent = await sendEmail(toAddress, input.subject, input.body, userAuth, input.cc);
+
+        const toResult = await resolveAddresses(input.to_name, input.to, "destinatario");
+        if (typeof toResult === "string") return toResult;
+        const toAddress = toResult.join(", ");
+
+        let ccAddress: string | undefined;
+        if (input.cc_name || input.cc) {
+          const ccResult = await resolveAddresses(input.cc_name, input.cc, "destinatario CC");
+          if (typeof ccResult === "string") return ccResult;
+          ccAddress = ccResult.join(", ");
+        }
+
+        const sent = await sendEmail(toAddress, input.subject, input.body, userAuth, ccAddress);
+        const ccInfo = ccAddress ? ` (CC: ${ccAddress})` : "";
         return sent
-          ? `Email inviata a ${toAddress} con oggetto "${input.subject}".`
+          ? `Email inviata a ${toAddress}${ccInfo} con oggetto "${input.subject}".`
           : `Invio email fallito a ${toAddress} — verifica la configurazione Google (serve il scope gmail.send).`;
       }
 
@@ -2025,26 +2062,34 @@ Genera 5-10 task concreti e actionable.`,
       }
 
       if (name === "forward_email") {
-        // Resolve recipient email
-        let to = input.to;
-        if (!to && input.to_name) {
-          const [emp] = await db.select({ email: employees.email, googleEmail: employees.googleEmail })
+        // Resolve TO recipients (same logic as send_email)
+        const fwdToNames = input.to_name as string | undefined;
+        const fwdToEmails = input.to as string | undefined;
+        const resolvedFwdTo: string[] = [];
+        for (const rawName of (fwdToNames ?? "").split(",").map((s: string) => s.trim()).filter(Boolean)) {
+          const empMatches = await db
+            .select({ name: employees.name, email: employees.email, googleEmail: employees.googleEmail })
             .from(employees)
-            .where(sql`${employees.name} ILIKE ${"%" + input.to_name + "%"}`)
-            .limit(1);
-          to = emp?.email ?? emp?.googleEmail;
-          if (!to) return `Employee "${input.to_name}" non trovato o senza email.`;
+            .where(sql`${employees.name} ILIKE ${"%" + rawName + "%"}`);
+          if (empMatches.length > 1) return `Trovati ${empMatches.length} dipendenti per "${rawName}":\n${empMatches.map((e) => `- ${e.name}: ${e.googleEmail ?? e.email ?? "nessuna email"}`).join("\n")}\nSpecifica meglio il nome.`;
+          const addr = empMatches[0]?.googleEmail ?? empMatches[0]?.email;
+          if (!addr) return `Dipendente "${rawName}" non trovato o senza email.`;
+          resolvedFwdTo.push(addr);
         }
-        if (!to) return "Specifica un destinatario (to o to_name).";
+        for (const addr of (fwdToEmails ?? "").split(",").map((s: string) => s.trim()).filter(Boolean)) {
+          resolvedFwdTo.push(addr);
+        }
+        if (!resolvedFwdTo.length) return "Specifica un destinatario (to o to_name).";
+        const fwdTo = resolvedFwdTo.join(", ");
 
-        // Find the email
         if (!input.email_query) return "Specifica email_query per trovare l'email da inoltrare.";
-        const emails = await searchEmails(input.email_query, 1, userAuth);
-        if (!emails.length) return `Nessuna email trovata per "${input.email_query}".`;
+        const fwdEmails = await searchEmails(input.email_query as string, 1, userAuth);
+        if (!fwdEmails.length) return `Nessuna email trovata per "${input.email_query}".`;
 
-        const sent = await forwardEmail(emails[0].id, to, input.note, userAuth);
+        // Build forwarded body with optional cc (note: forwardEmail only accepts a single `to` string — pass comma list)
+        const sent = await forwardEmail(fwdEmails[0].id, fwdTo, input.note as string | undefined, userAuth);
         return sent
-          ? `Email "${emails[0].subject}" inoltrata a ${to}.`
+          ? `Email "${fwdEmails[0].subject}" inoltrata a ${fwdTo}.`
           : `Errore nell'inoltro dell'email.`;
       }
 
