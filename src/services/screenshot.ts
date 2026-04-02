@@ -67,28 +67,8 @@ export async function takeScreenshot(
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
     await page.waitForLoadState("networkidle").catch(() => {});
 
-    // Adaptive wait: check for meaningful content, retry up to 4x (max 8s)
-    for (let attempt = 0; attempt < 4; attempt++) {
-      const hasContent = await page.evaluate(() => {
-        const body = document.body;
-        if (!body) return false;
-        const appRoot = body.querySelector("main, #app, #root, [role='main'], .app, article");
-        return appRoot ? appRoot.scrollHeight > 100 : body.scrollHeight > 200;
-      });
-      if (hasContent) break;
-      await page.waitForTimeout(2000);
-    }
-
-    // Wait for skeleton/loading indicators to disappear (Notion, Linear, etc.)
-    await page.waitForFunction(() => {
-      const skeletons = document.querySelectorAll(
-        '[class*="skeleton"], [class*="loading"], [data-placeholder="true"], .shimmer'
-      );
-      return skeletons.length === 0;
-    }, { timeout: 10_000 }).catch(() => {});
-
-    // Extra buffer for secondary content (sidebar, database rows, images)
-    await page.waitForTimeout(1500);
+    // Wait for full rendering: SPAs (Notion, Linear, etc.) load content after networkidle
+    await page.waitForTimeout(5000);
 
     // Detect redirect to login/auth pages — inform user, don't crash
     const finalUrl = page.url();
