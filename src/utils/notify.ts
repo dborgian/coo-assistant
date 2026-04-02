@@ -57,6 +57,25 @@ export function htmlToMrkdwn(html: string): string {
     .replace(/&gt;/g, ">");
 }
 
+/** Send a raw DM to a Slack member — no HTML conversion (use for AI-generated messages). */
+export async function sendSlackDMRaw(slackMemberId: string, text: string): Promise<boolean> {
+  if (!app) {
+    logger.warn({ slackMemberId }, "notify: Slack app not initialized");
+    return false;
+  }
+  try {
+    const conv = await app.client.conversations.open({ users: slackMemberId });
+    const channelId = (conv.channel as any)?.id as string | undefined;
+    if (!channelId) return false;
+    await app.client.chat.postMessage({ channel: channelId, text });
+    logger.info({ slackMemberId }, "Raw DM sent");
+    return true;
+  } catch (err) {
+    logger.error({ err, slackMemberId }, "sendSlackDMRaw failed");
+    return false;
+  }
+}
+
 /** Open a DM with a Slack member and post a message. Returns true on success. */
 export async function sendSlackDM(slackMemberId: string, text: string): Promise<boolean> {
   if (!app) {

@@ -948,7 +948,12 @@ export async function sendSlackThread(
   mentionUserId?: string,
 ): Promise<boolean> {
   if (!slackApp) return false;
-  const fullText = mentionUserId ? `<@${mentionUserId}> ${text}` : text;
+  let fullText = text;
+  if (mentionUserId) {
+    // Strip any plain-text @Name mentions Claude may have included to avoid duplicating the Slack <@id> mention
+    const stripped = text.replace(/@[A-Za-zÀ-ÿ][\w\s.-]*/g, "").replace(/\s{2,}/g, " ").trim();
+    fullText = `<@${mentionUserId}> ${stripped}`;
+  }
   try {
     await slackApp.client.chat.postMessage({
       channel: channelId,
