@@ -14,7 +14,8 @@
     "type-check": "tsc --noEmit",
     "db:migrate": "tsx scripts/db-migrate.ts",
     "google:auth": "tsx scripts/google-oauth.ts",
-    "setup": "bash scripts/setup.sh"
+    "setup": "bash scripts/setup.sh",
+    "browser:login": "tsx scripts/browser-login.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",

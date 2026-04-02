@@ -1,56 +1,60 @@
 /**
- * Browser Login Script — saves authenticated session for the screenshot tool.
+ * Browser login script for private page screenshots.
  *
- * Run LOCALLY (not on Railway, requires a display):
- *   npx tsx scripts/browser-login.ts
+ * Opens a visible Chromium window so you can log into any site (Notion, Google, etc.),
+ * then saves the session state directly to Redis — no env var, no file size limit.
  *
- * After running:
- *   - Local dev: data/browser-storage.json is used automatically
- *   - Railway: copy the printed BROWSER_STORAGE_STATE value to Railway env vars
+ * Run LOCALLY (requires a display — works on Windows or WSL with X11):
+ *   npm run browser:login
+ *
+ * The session persists in Redis until cookies expire (usually weeks/months).
+ * Re-run this script to refresh it.
  */
 
 import { chromium } from "playwright";
-import { writeFileSync, mkdirSync } from "fs";
-import { join } from "path";
-import * as readline from "readline";
+import { createInterface } from "readline";
+import Redis from "ioredis";
+import { config as loadDotenv } from "dotenv";
 
-const OUTPUT_FILE = join(process.cwd(), "data", "browser-storage.json");
+loadDotenv();
 
-function waitForEnter(message: string): Promise<void> {
+const REDIS_SESSION_KEY = "browser:session_state";
+
+function waitForEnter(prompt: string): Promise<void> {
   return new Promise((resolve) => {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    rl.question(message, () => { rl.close(); resolve(); });
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(prompt, () => { rl.close(); resolve(); });
   });
 }
 
 (async () => {
-  console.log("Launching browser for manual login...\n");
+  const redisUrl = process.env.REDIS_URL;
+  if (!redisUrl) {
+    console.error("❌  REDIS_URL non trovato nel .env — impossibile salvare la sessione.");
+    process.exit(1);
+  }
 
-  const browser = await chromium.launch({ headless: false });
-  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  console.log("🌐  Avvio Chromium con interfaccia grafica...");
+  const browser = await chromium.launch({ headless: false, args: ["--start-maximized"] });
+  const context = await browser.newContext({ viewport: null });
   const page = await context.newPage();
+  await page.goto("https://www.notion.so");
 
-  // Step 1: Google login
-  await page.goto("https://accounts.google.com");
-  await waitForEnter("Log in to Google in the browser window, then press ENTER here...");
+  console.log("\n✅  Chromium aperto.");
+  console.log("👉  Fai login su tutti i siti che vuoi (Notion, Google, etc.).");
+  console.log("    Puoi navigare liberamente — la sessione viene salvata quando premi ENTER.\n");
 
-  // Step 2: Notion login (optional)
-  await page.goto("https://www.notion.so/login");
-  await waitForEnter("Log in to Notion (if needed), then press ENTER here... (or just press ENTER to skip)");
+  await waitForEnter("Premi ENTER quando hai finito di fare login...");
 
-  // Save session state
+  console.log("\n💾  Estrazione e salvataggio sessione in Redis...");
   const state = await context.storageState();
-  mkdirSync(join(process.cwd(), "data"), { recursive: true });
-  writeFileSync(OUTPUT_FILE, JSON.stringify(state, null, 2));
-
-  const base64 = Buffer.from(JSON.stringify(state)).toString("base64");
-
-  console.log(`\nSession saved to: ${OUTPUT_FILE}`);
-  console.log("\nFor Railway, add this environment variable:");
-  console.log("----------------------------------------");
-  console.log(`BROWSER_STORAGE_STATE=${base64}`);
-  console.log("----------------------------------------\n");
-
   await browser.close();
+
+  const redis = new Redis(redisUrl);
+  await redis.set(REDIS_SESSION_KEY, JSON.stringify(state));
+  await redis.quit();
+
+  console.log(`\n✅  Sessione salvata: ${state.cookies.length} cookies, ${state.origins.length} origini.`);
+  console.log("    Gli screenshot di pagine private funzioneranno fino alla scadenza dei cookies.");
   process.exit(0);
 })();
