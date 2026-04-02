@@ -1175,7 +1175,7 @@ ${JSON.stringify(data, null, 2)}`;
           db.select().from(tasks).where(inArray(tasks.status, ["pending", "in_progress"])),
           db.select().from(tasks).where(eq(tasks.status, "done")),
           db.select().from(messageLogs).where(sql`${messageLogs.receivedAt}::date = ${today}`),
-          db.select({ id: employees.id, name: employees.name }).from(employees).where(eq(employees.isActive, true)),
+          db.select({ id: employees.id, name: employees.name, accessRole: employees.accessRole }).from(employees).where(eq(employees.isActive, true)),
         ]);
         const empNameById = new Map(allEmpsForReport.map((e) => [e.id, e.name]));
         const overdueTasks = activeTasks.filter((t) => t.dueDate && new Date(t.dueDate) < new Date());
@@ -1197,9 +1197,30 @@ ${JSON.stringify(data, null, 2)}`;
         const slackMsgs = allMsgs.filter((m) => m.source === "slack");
         const notionData = isNotionConfigured() ? await getNotionWorkspaceSummary().catch(() => null) : null;
 
-        const narrative = await this.think("Genera un report operativo giornaliero basato sui dati forniti. Scrivi in modo narrativo. Per il PDF: NON usare emoji, usa solo testo ASCII.", {
+        // Resolve owner name from DB (accessRole = 'owner')
+        const ownerEmpRow = allEmpsForReport.find((e) => e.accessRole === "owner") ?? allEmpsForReport[0];
+        const ownerName = ownerEmpRow?.name ?? "Owner";
+
+        // Build calendar groups per person for PDF section and narrative
+        const calendarByPerson: { person: string; events: { summary: string; start: string | null; end: string | null }[] }[] = [];
+        if (ownerEvts.length) {
+          calendarByPerson.push({ person: ownerName, events: ownerEvts.map((e) => ({ summary: e.summary, start: e.start ?? null, end: e.end ?? null })) });
+        }
+        for (const { employee: empName, events: empEvts } of teamEventsData) {
+          const filtered = empEvts.filter((e) => !seenEventIds.has(e.id) === false || ownerEvts.every((o) => o.id !== e.id));
+          if (filtered.length) {
+            calendarByPerson.push({ person: empName, events: filtered.map((e) => ({ summary: e.summary, start: e.start ?? null, end: e.end ?? null })) });
+          }
+        }
+
+        const narrative = await this.think(
+          "Genera un report operativo giornaliero basato sui dati forniti. " +
+          "Scrivi in modo narrativo, chiaro e strutturato. " +
+          "Raggruppa gli eventi calendario per persona. " +
+          "NON usare emoji, usa solo testo ASCII. " +
+          "NON includere markup XML, tool calls, o tag tecnici — solo testo pulito.", {
           date: today,
-          calendar_events: calEvts.map((e) => ({ summary: e.summary, start: e.start, end: e.end })),
+          calendar_per_persona: calendarByPerson,
           important_emails: emails.map((e) => ({ from: e.from, subject: e.subject, snippet: e.snippet })),
           tasks: activeTasks.map((t) => ({ title: t.title, status: t.status, priority: t.priority, due: t.dueDate, assignee: empNameById.get(t.assignedTo ?? "") ?? null })),
           slack_messages: slackMsgs.length,
@@ -1216,6 +1237,7 @@ ${JSON.stringify(data, null, 2)}`;
           notionTaskCount: notionData?.tasks.length ?? 0,
           taskList: activeTasks.map((t) => ({ title: t.title, status: t.status, priority: t.priority, due: t.dueDate, assignee: empNameById.get(t.assignedTo ?? "") ?? null })),
           msgBySource: Array.from(srcCount, ([s, v]) => ({ label: s, value: v, color: srcColors[s] ?? "#888888" })),
+          calendarByPerson,
         });
         const fileName = `daily-report-${today}.pdf`;
         const driveFile = await uploadFileToDrive(fileName, pdf, "application/pdf", config.DRIVE_DAILY_FOLDER_ID || undefined).catch(() => null);
@@ -2330,7 +2352,15 @@ Genera 5-10 task concreti e actionable.`,
       ];
     }
 
-    const responseText = textParts.join("\n") || "Operazione completata.";
+    const rawResponse = textParts.join("\n") || "Operazione completata.";
+    // Strip raw AI markup artifacts that sometimes leak into text blocks
+    const responseText = rawResponse
+      .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "")
+      .replace(/<assistant_response>|<\/assistant_response>/g, "")
+      .replace(/<function_calls>[\s\S]*?<\/antml:function_calls>/g, "")
+      .replace(/<tool_result>[\s\S]*?<\/tool_result>/g, "")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim() || "Operazione completata.";
 
     if (chatId) {
       // Persist query + response in conversation history (Redis or in-memory)

@@ -20,6 +20,18 @@ function stripEmoji(text: string): string {
   return text.replace(/[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}\u{200D}\u{20E3}\u{E0020}-\u{E007F}]/gu, "").replace(/\s{2,}/g, " ");
 }
 
+/** Remove AI markup artifacts and XML tags that sometimes leak into narrative text */
+function stripArtifacts(text: string): string {
+  return text
+    .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "")
+    .replace(/<assistant_response>|<\/assistant_response>/g, "")
+    .replace(/<function_calls>[\s\S]*?<\/antml:function_calls>/g, "")
+    .replace(/<tool_result>[\s\S]*?<\/tool_result>/g, "")
+    .replace(/<[^>]{1,40}>/g, "") // strip any remaining short XML-like tags
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function fmtDate(d: Date | string | null): string {
   if (!d) return "-";
   return new Date(d).toLocaleDateString("it-IT", { day: "2-digit", month: "2-digit", year: "numeric" });
@@ -156,7 +168,7 @@ function drawPieChart(doc: PDFKit.PDFDocument, title: string, items: { label: st
 }
 
 function drawNarrative(doc: PDFKit.PDFDocument, text: string): void {
-  const clean = stripEmoji(text);
+  const clean = stripEmoji(stripArtifacts(text));
   for (const rawLine of clean.split("\n")) {
     ensureSpace(doc, 16);
     const line = rawLine.trim();
@@ -226,6 +238,39 @@ function drawTaskTable(doc: PDFKit.PDFDocument, taskList: any[]): void {
   doc.moveDown(0.3);
 }
 
+function fmtTime(dt: string | null): string {
+  if (!dt) return "";
+  try {
+    return new Date(dt).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" });
+  } catch { return dt; }
+}
+
+function drawCalendarSection(
+  doc: PDFKit.PDFDocument,
+  groups: { person: string; events: { summary: string; start: string | null; end: string | null }[] }[],
+): void {
+  const relevant = groups.filter((g) => g.events.length > 0);
+  if (!relevant.length) return;
+
+  drawSection(doc, "Calendario del Giorno");
+  for (const group of relevant) {
+    ensureSpace(doc, 24 + group.events.length * 14);
+    doc.font("Helvetica-Bold").fontSize(9).fillColor(C.accent)
+      .text(group.person, MARGIN, doc.y, { width: CONTENT_W });
+    doc.moveDown(0.2);
+
+    for (const evt of group.events) {
+      ensureSpace(doc, 14);
+      const time = evt.start ? `${fmtTime(evt.start)}${evt.end ? ` - ${fmtTime(evt.end)}` : ""}` : "";
+      const line = time ? `  ${time}  •  ${stripEmoji(evt.summary)}` : `  • ${stripEmoji(evt.summary)}`;
+      doc.font("Helvetica").fontSize(8.5).fillColor(C.black)
+        .text(line, MARGIN + 8, doc.y, { width: CONTENT_W - 8, lineGap: 1.5 });
+    }
+    doc.moveDown(0.4);
+  }
+  doc.fillColor(C.black);
+}
+
 function drawFooter(doc: PDFKit.PDFDocument): void {
   doc.moveDown(1.5);
   doc.fontSize(7).fillColor(C.muted).text(
@@ -248,6 +293,7 @@ export interface DailyReportData {
   notionTaskCount: number;
   taskList: { title: string; status: string | null; priority: string | null; due: Date | null; assignee?: string | null }[];
   msgBySource: { label: string; value: number; color: string }[];
+  calendarByPerson?: { person: string; events: { summary: string; start: string | null; end: string | null }[] }[];
 }
 
 export async function generateDailyReportPdf(data: DailyReportData): Promise<Buffer> {
@@ -290,6 +336,11 @@ export async function generateDailyReportPdf(data: DailyReportData): Promise<Buf
     // AI narrative
     drawSection(doc, "Report Operativo");
     drawNarrative(doc, data.narrative);
+
+    // Calendar section grouped by person
+    if (data.calendarByPerson?.length) {
+      drawCalendarSection(doc, data.calendarByPerson);
+    }
 
     // Task table
     if (data.taskList.length) {
