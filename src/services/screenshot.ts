@@ -1,5 +1,7 @@
 import { chromium } from "playwright";
 import type { Browser } from "playwright";
+import { existsSync, readFileSync } from "fs";
+import { join } from "path";
 import { logger } from "../utils/logger.js";
 
 let browser: Browser | null = null;
@@ -12,18 +14,48 @@ async function getBrowser(): Promise<Browser> {
   return browser;
 }
 
+/**
+ * Loads saved browser session state.
+ * Priority: BROWSER_STORAGE_STATE env var (base64 JSON) → data/browser-storage.json file.
+ * Returns undefined if neither is available (anonymous session).
+ */
+function loadStorageState(): object | undefined {
+  const envVal = process.env.BROWSER_STORAGE_STATE;
+  if (envVal) {
+    try {
+      return JSON.parse(Buffer.from(envVal, "base64").toString("utf-8"));
+    } catch {
+      logger.warn("BROWSER_STORAGE_STATE env var contains invalid JSON — ignored");
+    }
+  }
+  const filePath = join(process.cwd(), "data", "browser-storage.json");
+  if (existsSync(filePath)) {
+    try {
+      return JSON.parse(readFileSync(filePath, "utf-8"));
+    } catch {
+      logger.warn({ filePath }, "browser-storage.json is invalid JSON — ignored");
+    }
+  }
+  return undefined;
+}
+
 export async function takeScreenshot(
   url: string,
   opts?: { fullPage?: boolean; width?: number; height?: number },
 ): Promise<Buffer> {
   const b = await getBrowser();
-  const page = await b.newPage({
+  const storageState = loadStorageState();
+
+  const context = await b.newContext({
     viewport: { width: opts?.width ?? 1280, height: opts?.height ?? 720 },
+    ...(storageState ? { storageState: storageState as any } : {}),
   });
+  const page = await context.newPage();
+
   try {
     await page.goto(url, { waitUntil: "networkidle", timeout: 30_000 });
 
-    // Detect redirect to login/auth pages (Google, Notion, etc.)
+    // Detect redirect to login/auth pages (Google, Notion, Slack, etc.)
     const finalUrl = page.url();
     const isLoginPage =
       finalUrl.includes("accounts.google.com") ||
@@ -32,7 +64,10 @@ export async function takeScreenshot(
       finalUrl.includes("slack.com/signin") ||
       (finalUrl.includes("?next=") && finalUrl.includes("login"));
     if (isLoginPage) {
-      throw new Error(`La pagina richiede autenticazione — lo screenshot mostrerebbe solo la pagina di login. Usa gli strumenti specifici (Google Drive, Notion, ecc.) per accedere a contenuti protetti.`);
+      const hint = storageState
+        ? "La sessione salvata potrebbe essere scaduta. Riesegui: npx tsx scripts/browser-login.ts"
+        : "Configura la sessione browser con: npx tsx scripts/browser-login.ts";
+      throw new Error(`La pagina richiede autenticazione — screenshot non disponibile. ${hint}`);
     }
 
     const buffer = await page.screenshot({
@@ -41,7 +76,7 @@ export async function takeScreenshot(
     });
     return Buffer.from(buffer);
   } finally {
-    await page.close();
+    await context.close();
   }
 }
 
