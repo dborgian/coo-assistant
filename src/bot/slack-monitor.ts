@@ -766,20 +766,40 @@ export interface SlackMessageMatch {
   permalink?: string;
 }
 
+export interface SearchSlackOpts {
+  query?: string;       // filter by message text content
+  fromUser?: string;    // filter by sender display name (case-insensitive)
+  channelId?: string;   // restrict to this channel ID
+  channelName?: string; // restrict to channel by name (e.g. "test-3") — resolved automatically
+  limit?: number;
+}
+
 /**
- * Search Slack channel history for messages matching a query string.
- * Searches all bot-joined channels (or a specific channelId if given).
- * Returns up to `limit` matches with permalinks.
+ * Search Slack channel history.
+ * Supports filtering by message text, sender name, channel id or channel name.
+ * Returns up to `limit` matches with permalinks, channel_id and message_ts.
  */
-export async function searchSlackMessages(
-  query: string,
-  channelId?: string,
-  limit = 5,
-): Promise<SlackMessageMatch[]> {
+export async function searchSlackMessages(opts: SearchSlackOpts): Promise<SlackMessageMatch[]> {
   if (!slackApp) return [];
-  const queryLower = query.toLowerCase();
-  const channelsToSearch = channelId
-    ? [[channelId, channelNameCache.get(channelId) ?? channelId] as [string, string]]
+
+  const queryLower = opts.query?.toLowerCase();
+  const fromUserLower = opts.fromUser?.toLowerCase();
+  const limit = opts.limit ?? 5;
+
+  // Resolve channel_name → channel_id if needed
+  let resolvedChannelId = opts.channelId;
+  if (!resolvedChannelId && opts.channelName) {
+    const needle = opts.channelName.toLowerCase().replace(/^#/, "");
+    for (const [id, name] of botChannels.entries()) {
+      if (name.toLowerCase() === needle || name.toLowerCase().includes(needle)) {
+        resolvedChannelId = id;
+        break;
+      }
+    }
+  }
+
+  const channelsToSearch = resolvedChannelId
+    ? [[resolvedChannelId, channelNameCache.get(resolvedChannelId) ?? botChannels.get(resolvedChannelId) ?? resolvedChannelId] as [string, string]]
     : [...botChannels.entries()];
 
   const results: SlackMessageMatch[] = [];
@@ -795,8 +815,11 @@ export async function searchSlackMessages(
       for (const msg of messages) {
         if (results.length >= limit) break;
         if (!msg.text || !msg.ts) continue;
-        if (!msg.text.toLowerCase().includes(queryLower)) continue;
 
+        // Text filter
+        if (queryLower && !msg.text.toLowerCase().includes(queryLower)) continue;
+
+        // Sender filter — resolve name first
         let userName = "unknown";
         if (msg.user) {
           if (userNameCache.has(msg.user)) {
@@ -809,6 +832,8 @@ export async function searchSlackMessages(
             } catch { userName = msg.user; }
           }
         }
+        if (fromUserLower && !userName.toLowerCase().includes(fromUserLower)) continue;
+
         let permalink: string | undefined;
         try {
           const pl = await (slackApp.client.chat.getPermalink as Function)({ channel: chId, message_ts: msg.ts });

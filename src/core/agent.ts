@@ -361,15 +361,17 @@ ${JSON.stringify(data, null, 2)}`;
     },
     {
       name: "search_slack_message",
-      description: "Search Slack channel history for messages matching a query. Returns matching messages with direct permalinks. Use this instead of screenshots when the user asks to reference or link to a Slack discussion.",
+      description: "Search Slack channel history. Filter by message text, sender name, or channel name. Use channel_name when the user mentions a channel by name (e.g. 'test-3'). Use from_user to find messages by a specific person. Returns messages with permalinks, channel_id and message_ts for thread replies.",
       input_schema: {
         type: "object" as const,
         properties: {
-          query: { type: "string", description: "Text to search for in messages" },
-          channel_id: { type: "string", description: "Restrict search to a specific channel ID (optional — searches all channels if omitted)" },
-          limit: { type: "number", description: "Max results to return (default 5)" },
+          query: { type: "string", description: "Text to search for in message content (optional)" },
+          from_user: { type: "string", description: "Filter by sender name — e.g. 'Emanuele' to find Emanuele's messages" },
+          channel_name: { type: "string", description: "Channel name to search in — e.g. 'test-3'. Use this instead of channel_id when you know the name." },
+          channel_id: { type: "string", description: "Channel ID (use channel_name if you don't know the ID)" },
+          limit: { type: "number", description: "Max results (default 5)" },
         },
-        required: ["query"],
+        required: [],
       },
     },
     {
@@ -1123,8 +1125,18 @@ ${JSON.stringify(data, null, 2)}`;
       }
 
       if (name === "search_slack_message") {
-        const matches = await searchSlackMessages(input.query, input.channel_id, input.limit ?? 5);
-        if (!matches.length) return `Nessun messaggio trovato per "${input.query}".`;
+        const matches = await searchSlackMessages({
+          query: input.query,
+          fromUser: input.from_user,
+          channelId: input.channel_id,
+          channelName: input.channel_name,
+          limit: input.limit ?? 5,
+        });
+        if (!matches.length) {
+          const who = input.from_user ? ` da "${input.from_user}"` : "";
+          const where = input.channel_name ? ` in #${input.channel_name}` : input.channel_id ? ` nel canale ${input.channel_id}` : "";
+          return `Nessun messaggio trovato${who}${where}.`;
+        }
         const lines = matches.map((m, i) => {
           const meta = `channel_id: ${m.channelId} | message_ts: ${m.messageTs}${m.permalink ? ` | permalink: ${m.permalink}` : ""}`;
           return `${i + 1}. [#${m.channelName}] ${m.userName}: "${m.text.slice(0, 120)}"\n   ${meta}`;
