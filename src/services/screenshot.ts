@@ -9,7 +9,10 @@ let browser: Browser | null = null;
 
 async function getBrowser(): Promise<Browser> {
   if (!browser || !browser.isConnected()) {
-    browser = await chromium.launch({ headless: true });
+    browser = await chromium.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+    });
     logger.info("Playwright Chromium browser launched");
   }
   return browser;
@@ -61,7 +64,9 @@ export async function takeScreenshot(
   const page = await context.newPage();
 
   try {
-    await page.goto(url, { waitUntil: "networkidle", timeout: 30_000 });
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await page.waitForLoadState("networkidle").catch(() => {});
+    await page.waitForTimeout(2000);
 
     // Detect redirect to login/auth pages — inform user, don't crash
     const finalUrl = page.url();

@@ -889,14 +889,14 @@ ${JSON.stringify(data, null, 2)}`;
     },
     {
       name: "take_screenshot",
-      description: "Take a screenshot of a URL and attach it to the response. Works for public pages and private pages if the user has a saved browser session (run npm run browser:login to set one up). For Google Docs/Drive content prefer search_drive; for Notion data prefer notion_action.",
+      description: "Take a screenshot of a page and attach it to the response. If the user describes a page without giving a URL, first resolve the URL using notion_action (list_pages/search) or search_drive, then call this tool with the resolved URL. Ask the user for the URL only if you cannot determine it from context.",
       input_schema: {
         type: "object" as const,
         properties: {
-          url: { type: "string", description: "Full URL to screenshot (must be publicly accessible)" },
+          url: { type: "string", description: "Full URL of the page to screenshot. Resolve from context if not explicitly given." },
           full_page: { type: "boolean", description: "Capture full page scroll height (default: false = viewport only)" },
         },
-        required: ["url"],
+        required: [],
       },
     },
     {
@@ -2209,7 +2209,7 @@ Genera 5-10 task concreti e actionable.`,
       }
 
       if (name === "take_screenshot") {
-        if (!input.url) return "URL richiesto per lo screenshot.";
+        if (!input.url) return "Non riesco a determinare l'URL da schermare dal contesto. Puoi specificare l'URL della pagina?";
         try {
           const buffer = await takeScreenshot(input.url, { fullPage: !!input.full_page, slackUserId });
           const filename = `screenshot-${Date.now()}.png`;
