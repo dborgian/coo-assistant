@@ -771,6 +771,34 @@ export function registerSlashCommands(slackApp: SlackApp, resolveUser: ResolveFn
     }
   });
 
+  // /coo-browser-login — sends ephemeral instructions with the user's Slack ID pre-filled
+  slackApp.command("/coo-browser-login", async ({ ack, command, respond }) => {
+    await ack();
+    try {
+      const user = await resolveUser(command.user_id);
+      if (!user) { await respond("Non sei registrato nel sistema."); return; }
+      if (!requireRole(user, "owner", "admin")) {
+        await respond("Solo owner e admin possono abilitare gli screenshot di pagine private.");
+        return;
+      }
+      await respond({
+        text:
+          `*Per abilitare screenshot di pagine private:*\n\n` +
+          `1. Apri il terminale nella cartella del progetto\n` +
+          `2. Copia e incolla questo comando:\n\n` +
+          `\`\`\`npm run browser:login -- --user ${command.user_id}\`\`\`\n\n` +
+          `3. Si apre Chromium — fai login su Notion, Google, o qualsiasi sito\n` +
+          `4. Torna nel terminale e premi ENTER\n\n` +
+          `✅ Fatto! Da quel momento i tuoi screenshot di pagine private funzionano.\n` +
+          `_La sessione dura settimane/mesi. Se scade, riesegui il comando._`,
+        response_type: "ephemeral",
+      });
+    } catch (err) {
+      logger.error({ err }, "/coo-browser-login failed");
+      await respond("Errore nel caricamento delle istruzioni.");
+    }
+  });
+
   // /coo-connect-google and /coo-disconnect-google are registered in onboarding
   // They are imported and registered from there to avoid circular imports.
 }
