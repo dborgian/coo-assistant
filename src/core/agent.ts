@@ -889,7 +889,7 @@ ${JSON.stringify(data, null, 2)}`;
     },
     {
       name: "take_screenshot",
-      description: "Take a screenshot of a page and attach it to the response. If the user describes a page without giving a URL, first resolve the URL using notion_action (list_pages/search) or search_drive, then call this tool with the resolved URL. Ask the user for the URL only if you cannot determine it from context.",
+      description: "Take a screenshot of a page and attach it to the response. NOT supported for Slack (app.slack.com) — use get_slack_summary for Slack data instead. If the user describes a page without giving a URL, first resolve the URL using notion_action (list_pages/search) or search_drive, then call this tool with the resolved URL. Ask the user for the URL only if you cannot determine it from context.",
       input_schema: {
         type: "object" as const,
         properties: {
@@ -2210,6 +2210,10 @@ Genera 5-10 task concreti e actionable.`,
 
       if (name === "take_screenshot") {
         if (!input.url) return "Non riesco a determinare l'URL da schermare dal contesto. Puoi specificare l'URL della pagina?";
+        // Slack URLs are not supported — messages load via WebSocket and never render in headless
+        if ((input.url as string).includes("app.slack.com") || (input.url as string).includes("slack.com/archives")) {
+          return "Gli screenshot di Slack non sono supportati: i messaggi si caricano via WebSocket e non vengono mai visualizzati in modalità headless. Usa `get_slack_summary` per ottenere i dati dal canale via API Slack.";
+        }
         try {
           const buffer = await takeScreenshot(input.url, { fullPage: !!input.full_page, slackUserId });
           const filename = `screenshot-${Date.now()}.png`;

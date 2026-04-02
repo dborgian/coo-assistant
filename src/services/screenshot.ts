@@ -95,9 +95,9 @@ export async function takeScreenshot(
       throw new Error(`La pagina richiede autenticazione. Per abilitare screenshot di pagine private: ${userHint}`);
     }
 
-    // Content check: if page body is still empty after all waits, report it
+    // Content check: if page body has less than 100 chars of text, likely not rendered
     const bodyText = await page.evaluate(() => document.body?.innerText?.trim() ?? "");
-    if (bodyText.length < 10) {
+    if (bodyText.length < 100) {
       const userHint = opts?.slackUserId
         ? `Esegui: npm run browser:login -- --user ${opts.slackUserId}`
         : "Esegui: npm run browser:login -- --user <tuo_slack_id>";
