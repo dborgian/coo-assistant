@@ -154,7 +154,9 @@ Dopo aver eseguito il tool, conferma cosa hai fatto con i dettagli.
 
 SLACK — LINK E THREAD:
 - Quando l'utente chiede di fare riferimento a una discussione o messaggio Slack, usa search_slack_message per trovarlo e restituisci il permalink diretto. NON fare screenshot di Slack.
-- Quando devi rispondere a un utente in un canale Slack (non in DM), usa send_slack_notification con thread_ts del messaggio originale per rispondere nel thread, aggiungendo mention_user se devi taggare qualcuno.
+- Quando condividi un link a un messaggio Slack (via DM o canale), INCLUDI SEMPRE il permalink URL nel testo del messaggio cosi' il destinatario puo' cliccarlo. Il permalink lo trovi nel risultato di search_slack_message nel campo "permalink:".
+- Per mandare un messaggio o un link in DM a qualcuno, usa send_slack_notification con recipient_name. NON usare thread_ts per i DM — thread_ts serve solo per risposte in-thread nei canali pubblici.
+- Quando devi rispondere nel thread di un messaggio in un canale, usa send_slack_notification con channel_id + thread_ts del messaggio originale (entrambi dal risultato di search_slack_message), aggiungendo mention_user se devi taggare qualcuno.
 - Se conosci gia' il channel_id e il thread_ts dal contesto della conversazione, usali direttamente senza cercare di nuovo.
 
 REGOLE:
@@ -351,7 +353,7 @@ ${JSON.stringify(data, null, 2)}`;
           message: { type: "string", description: "The message to send" },
           channel_id: { type: "string", description: "Slack channel ID (optional)" },
           recipient_name: { type: "string", description: "Employee name to DM directly (optional, uses their slackMemberId)" },
-          thread_ts: { type: "string", description: "Timestamp of the parent message to reply in-thread (from search_slack_message)" },
+          thread_ts: { type: "string", description: "Timestamp of the parent message to reply in-thread IN A CHANNEL (do NOT use for DMs — for DMs just use recipient_name). Get this from search_slack_message results." },
           mention_user: { type: "string", description: "Slack member ID or employee name to @mention in the reply" },
         },
         required: ["message"],
@@ -1124,8 +1126,8 @@ ${JSON.stringify(data, null, 2)}`;
         const matches = await searchSlackMessages(input.query, input.channel_id, input.limit ?? 5);
         if (!matches.length) return `Nessun messaggio trovato per "${input.query}".`;
         const lines = matches.map((m, i) => {
-          const link = m.permalink ? ` → ${m.permalink}` : "";
-          return `${i + 1}. [#${m.channelName}] ${m.userName}: "${m.text.slice(0, 120)}"${link}`;
+          const meta = `channel_id: ${m.channelId} | message_ts: ${m.messageTs}${m.permalink ? ` | permalink: ${m.permalink}` : ""}`;
+          return `${i + 1}. [#${m.channelName}] ${m.userName}: "${m.text.slice(0, 120)}"\n   ${meta}`;
         });
         return `Trovati ${matches.length} messaggi:\n${lines.join("\n")}`;
       }
