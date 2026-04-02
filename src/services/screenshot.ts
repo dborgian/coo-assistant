@@ -79,6 +79,17 @@ export async function takeScreenshot(
       await page.waitForTimeout(2000);
     }
 
+    // Wait for skeleton/loading indicators to disappear (Notion, Linear, etc.)
+    await page.waitForFunction(() => {
+      const skeletons = document.querySelectorAll(
+        '[class*="skeleton"], [class*="loading"], [data-placeholder="true"], .shimmer'
+      );
+      return skeletons.length === 0;
+    }, { timeout: 10_000 }).catch(() => {});
+
+    // Extra buffer for secondary content (sidebar, database rows, images)
+    await page.waitForTimeout(1500);
+
     // Detect redirect to login/auth pages — inform user, don't crash
     const finalUrl = page.url();
     const isLoginPage =
