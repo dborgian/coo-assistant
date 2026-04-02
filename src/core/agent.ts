@@ -14,7 +14,7 @@ import { listDriveFiles, searchDriveFiles, uploadFileToDrive } from "../services
 import { getAuthForEmployee, getGoogleAuth, getUserGoogleAuth } from "./google-auth.js";
 import type { GoogleAuth } from "./google-auth.js";
 import { generateDailyReportPdf, generateEmployeeReportPdf, generateWeeklyReportPdf, type DailyReportData } from "../services/pdf-generator.js";
-import { sendSlackMessage, getNotificationsChannel } from "../bot/slack-monitor.js";
+import { sendSlackMessage, getNotificationsChannel, searchSlackMessages, sendSlackThread } from "../bot/slack-monitor.js";
 import { sendEmployeeNotification, sendOwnerNotification } from "../utils/notify.js";
 import { getTeamWorkload, type WorkloadSummary } from "../services/workload-tracker.js";
 import { getTeamCapacity, suggestAssignment } from "../services/capacity-planner.js";
@@ -88,8 +88,9 @@ AZIONI CHE PUOI ESEGUIRE (usa i tools quando l'utente lo chiede):
 - Cercare file su Google Drive (search_drive)
 - Consultare lo storico report passati (get_report_history)
 - Ottenere un riassunto AI delle conversazioni Slack (get_slack_summary)
+- Cercare messaggi Slack specifici e ottenere il link diretto (search_slack_message)
 - Vedere eventi del calendario (get_calendar_events)
-- Inviare notifiche/messaggi su Slack (send_slack_notification)
+- Inviare notifiche/messaggi su Slack, anche in thread con @mention (send_slack_notification)
 - Inviare email di reminder o notifica (send_email) — NON usare emoji nell'oggetto email
 - Mettere in pausa l'escalation di un task (snooze_escalation)
 - Creare task ricorrenti — daily, weekly, monthly (create_recurring_task)
@@ -150,6 +151,11 @@ Se l'utente specifica una sezione Notion, DEVI passare il parametro section corr
 Quando l'utente chiede "manda un reminder a X" o "crea un task per Y", USA IL TOOL. Non simulare l'azione.
 Per i reminder: se l'utente dice "manda un reminder a Damiano", cerca l'email dell'employee e invia sia su Slack che via email.
 Dopo aver eseguito il tool, conferma cosa hai fatto con i dettagli.
+
+SLACK — LINK E THREAD:
+- Quando l'utente chiede di fare riferimento a una discussione o messaggio Slack, usa search_slack_message per trovarlo e restituisci il permalink diretto. NON fare screenshot di Slack.
+- Quando devi rispondere a un utente in un canale Slack (non in DM), usa send_slack_notification con thread_ts del messaggio originale per rispondere nel thread, aggiungendo mention_user se devi taggare qualcuno.
+- Se conosci gia' il channel_id e il thread_ts dal contesto della conversazione, usali direttamente senza cercare di nuovo.
 
 REGOLE:
 - I dati nel context sono LIVE. Array vuoto = nessun dato, NON "non connesso"
@@ -338,15 +344,30 @@ ${JSON.stringify(data, null, 2)}`;
     },
     {
       name: "send_slack_notification",
-      description: "Send a message on Slack. Can send to a channel or DM a specific person. To DM someone, use their name in recipient_name.",
+      description: "Send a message on Slack. Can send to a channel, DM a specific person, or reply in a thread with optional @mention. Use thread_ts to reply in an existing thread (get it from search_slack_message).",
       input_schema: {
         type: "object" as const,
         properties: {
           message: { type: "string", description: "The message to send" },
           channel_id: { type: "string", description: "Slack channel ID (optional)" },
           recipient_name: { type: "string", description: "Employee name to DM directly (optional, uses their slackMemberId)" },
+          thread_ts: { type: "string", description: "Timestamp of the parent message to reply in-thread (from search_slack_message)" },
+          mention_user: { type: "string", description: "Slack member ID or employee name to @mention in the reply" },
         },
         required: ["message"],
+      },
+    },
+    {
+      name: "search_slack_message",
+      description: "Search Slack channel history for messages matching a query. Returns matching messages with direct permalinks. Use this instead of screenshots when the user asks to reference or link to a Slack discussion.",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          query: { type: "string", description: "Text to search for in messages" },
+          channel_id: { type: "string", description: "Restrict search to a specific channel ID (optional — searches all channels if omitted)" },
+          limit: { type: "number", description: "Max results to return (default 5)" },
+        },
+        required: ["query"],
       },
     },
     {
@@ -1075,8 +1096,38 @@ ${JSON.stringify(data, null, 2)}`;
         }
 
         if (!channelId) return "Slack notifications channel non configurato. Imposta SLACK_NOTIFICATIONS_CHANNEL nel .env.";
+
+        // Thread reply with optional @mention
+        if (input.thread_ts) {
+          let mentionId: string | undefined;
+          if (input.mention_user) {
+            // Resolve name → slackMemberId if not already an ID
+            if (input.mention_user.startsWith("U")) {
+              mentionId = input.mention_user;
+            } else {
+              const [emp] = await db.select({ slackMemberId: employees.slackMemberId })
+                .from(employees)
+                .where(sql`${employees.name} ILIKE ${"%" + input.mention_user + "%"}`)
+                .limit(1);
+              mentionId = emp?.slackMemberId ?? undefined;
+            }
+          }
+          const sent = await sendSlackThread(channelId, input.thread_ts, input.message, mentionId);
+          return sent ? `Risposta inviata nel thread${mentionId ? ` con @mention` : ""}.` : "Invio nel thread fallito.";
+        }
+
         const sent = await sendSlackMessage(channelId, input.message);
         return sent ? `Messaggio inviato su Slack${input.recipient_name ? ` a ${input.recipient_name}` : ""}.` : "Invio fallito — controlla la configurazione Slack.";
+      }
+
+      if (name === "search_slack_message") {
+        const matches = await searchSlackMessages(input.query, input.channel_id, input.limit ?? 5);
+        if (!matches.length) return `Nessun messaggio trovato per "${input.query}".`;
+        const lines = matches.map((m, i) => {
+          const link = m.permalink ? ` → ${m.permalink}` : "";
+          return `${i + 1}. [#${m.channelName}] ${m.userName}: "${m.text.slice(0, 120)}"${link}`;
+        });
+        return `Trovati ${matches.length} messaggi:\n${lines.join("\n")}`;
       }
 
       if (name === "send_email") {

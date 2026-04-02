@@ -43,6 +43,9 @@ export const TOOL_PERMISSIONS: Record<string, AccessRole[]> = {
   reply_email: ["owner", "admin"],
   search_emails: ["owner", "admin"],
 
+  // SLACK: search messages + thread replies
+  search_slack_message: ["owner", "admin"],
+
   // SENSITIVE: strategic analytics (owner only)
   get_team_sentiment: ["owner"],
   get_communication_patterns: ["owner"],

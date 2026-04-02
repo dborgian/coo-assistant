@@ -755,3 +755,114 @@ export async function sendSlackMessage(channelId: string, text: string): Promise
     return false;
   }
 }
+
+export interface SlackMessageMatch {
+  channelId: string;
+  channelName: string;
+  messageTs: string;
+  userId: string;
+  userName: string;
+  text: string;
+  permalink?: string;
+}
+
+/**
+ * Search Slack channel history for messages matching a query string.
+ * Searches all bot-joined channels (or a specific channelId if given).
+ * Returns up to `limit` matches with permalinks.
+ */
+export async function searchSlackMessages(
+  query: string,
+  channelId?: string,
+  limit = 5,
+): Promise<SlackMessageMatch[]> {
+  if (!slackApp) return [];
+  const queryLower = query.toLowerCase();
+  const channelsToSearch = channelId
+    ? [[channelId, channelNameCache.get(channelId) ?? channelId] as [string, string]]
+    : [...botChannels.entries()];
+
+  const results: SlackMessageMatch[] = [];
+
+  for (const [chId, chName] of channelsToSearch) {
+    if (results.length >= limit) break;
+    try {
+      const history = await (slackApp.client.conversations.history as Function)({
+        channel: chId,
+        limit: 200,
+      });
+      const messages: Array<{ ts: string; user?: string; text?: string }> = history.messages ?? [];
+      for (const msg of messages) {
+        if (results.length >= limit) break;
+        if (!msg.text || !msg.ts) continue;
+        if (!msg.text.toLowerCase().includes(queryLower)) continue;
+
+        let userName = "unknown";
+        if (msg.user) {
+          if (userNameCache.has(msg.user)) {
+            userName = userNameCache.get(msg.user)!;
+          } else {
+            try {
+              const info = await (slackApp.client.users.info as Function)({ user: msg.user });
+              userName = info.user?.real_name ?? info.user?.name ?? msg.user;
+              userNameCache.set(msg.user, userName);
+            } catch { userName = msg.user; }
+          }
+        }
+        let permalink: string | undefined;
+        try {
+          const pl = await (slackApp.client.chat.getPermalink as Function)({ channel: chId, message_ts: msg.ts });
+          permalink = pl.permalink;
+        } catch {
+          // permalink optional
+        }
+        results.push({
+          channelId: chId,
+          channelName: chName,
+          messageTs: msg.ts,
+          userId: msg.user ?? "",
+          userName,
+          text: msg.text,
+          permalink,
+        });
+      }
+    } catch (err) {
+      logger.warn({ err, channel: chId }, "Failed to search Slack channel history");
+    }
+  }
+  return results;
+}
+
+/** Get permalink for a specific Slack message */
+export async function getMessagePermalink(channelId: string, messageTs: string): Promise<string | null> {
+  if (!slackApp) return null;
+  try {
+    const result = await (slackApp.client.chat.getPermalink as Function)({ channel: channelId, message_ts: messageTs });
+    return result.permalink ?? null;
+  } catch (err) {
+    logger.warn({ err, channelId, messageTs }, "Failed to get Slack permalink");
+    return null;
+  }
+}
+
+/** Post a message in a thread, optionally @mentioning a Slack user */
+export async function sendSlackThread(
+  channelId: string,
+  threadTs: string,
+  text: string,
+  mentionUserId?: string,
+): Promise<boolean> {
+  if (!slackApp) return false;
+  const fullText = mentionUserId ? `<@${mentionUserId}> ${text}` : text;
+  try {
+    await slackApp.client.chat.postMessage({
+      channel: channelId,
+      thread_ts: threadTs,
+      text: fullText,
+    });
+    return true;
+  } catch (err) {
+    logger.error({ err, channelId, threadTs }, "Failed to send Slack thread reply");
+    return false;
+  }
+}
