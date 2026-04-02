@@ -899,6 +899,15 @@ ${JSON.stringify(data, null, 2)}`;
         required: ["url"],
       },
     },
+    {
+      name: "get_browser_login_instructions",
+      description: "Returns step-by-step instructions to enable private page screenshots for the current user. Use when the user asks to enable private screenshots, set up browser login, or says screenshots of private/Notion pages don't work.",
+      input_schema: {
+        type: "object" as const,
+        properties: {},
+        required: [],
+      },
+    },
   ];
 
   // --- Execute a tool call ---
@@ -2180,6 +2189,23 @@ Genera 5-10 task concreti e actionable.`,
           return `[${ts}] [${a.actionType}] ${a.description}`;
         });
         return `Azioni autonome recenti (${actions.length}):\n${lines.join("\n")}`;
+      }
+
+      if (name === "get_browser_login_instructions") {
+        const id = slackUserId ?? "IL_TUO_SLACK_ID";
+        return [
+          "Per abilitare screenshot di pagine private, esegui questo comando in locale:",
+          "",
+          `\`\`\`npm run browser:login -- --user ${id}\`\`\``,
+          "",
+          "Passaggi:",
+          "1. Apri il terminale nella cartella del progetto",
+          "2. Incolla il comando qui sopra",
+          "3. Si apre Chromium — fai login su Notion, Google, ecc.",
+          "4. Torna nel terminale e premi ENTER",
+          "",
+          "La sessione è salvata in Redis e dura settimane/mesi. Se scade, riesegui lo stesso comando.",
+        ].join("\n");
       }
 
       if (name === "take_screenshot") {

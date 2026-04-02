@@ -63,6 +63,7 @@ export const TOOL_PERMISSIONS: Record<string, AccessRole[]> = {
 
   // SCREENSHOT
   take_screenshot: ["owner", "admin"],
+  get_browser_login_instructions: ["owner", "admin"],
 
   // VISIBILITY + CONTROL (Phase 2B/2C)
   get_health_score: ["owner", "admin"],
