@@ -14,7 +14,7 @@ import { getAuthForEmployee, getGoogleAuth, getUserGoogleAuth } from "./google-a
 import type { GoogleAuth } from "./google-auth.js";
 import { generateDailyReportPdf, generateEmployeeReportPdf, generateWeeklyReportPdf, type DailyReportData } from "../services/pdf-generator.js";
 import { sendSlackMessage, getNotificationsChannel } from "../bot/slack-monitor.js";
-import { sendEmployeeNotification } from "../utils/notify.js";
+import { sendEmployeeNotification, sendOwnerNotification } from "../utils/notify.js";
 import { getTeamWorkload, type WorkloadSummary } from "../services/workload-tracker.js";
 import { getTeamCapacity, suggestAssignment } from "../services/capacity-planner.js";
 import { rescheduleTask, unscheduleTask } from "../services/auto-scheduler.js";
@@ -2237,6 +2237,13 @@ Genera 5-10 task concreti e actionable.`,
         chatId, this.client, this.model, fullSystemPrompt, messages, filteredTools,
       );
       messages = compressed.messages;
+      if (compressed.compressed) {
+        sendOwnerNotification(
+          `🗜️ *Compressione contesto* per *${userName ?? chatId}*\n` +
+          `Token: ${compressed.tokensBefore?.toLocaleString() ?? "?"} → ~${compressed.tokensAfter?.toLocaleString() ?? "?"}\n` +
+          `Messaggi compressi: ${compressed.messagesCompressed ?? "?"}`,
+        ).catch(() => {});
+      }
     }
     let textParts: string[] = [];
 

@@ -219,6 +219,7 @@ export const conversationSummaries = pgTable("conversation_summaries", {
   summary: text("summary").notNull(),
   messageCount: integer("message_count").default(0),
   tokenEstimate: integer("token_estimate").default(0),
+  compressionCount: integer("compression_count").default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
 }, (t) => [

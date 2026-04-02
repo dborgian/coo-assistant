@@ -14,7 +14,7 @@
  *   - Messages kept after compression: last 4 entries (2 user/assistant pairs)
  */
 import Anthropic from "@anthropic-ai/sdk";
-import { lt, eq } from "drizzle-orm";
+import { lt, eq, sql } from "drizzle-orm";
 import { db } from "../models/database.js";
 import { conversationSummaries } from "../models/schema.js";
 import { logger } from "../utils/logger.js";
@@ -90,7 +90,7 @@ export async function getConversationSummary(chatId: string): Promise<string | n
  * The summary pair is treated as a read-only context header — it is never included in what
  * gets re-summarized, so each compression cycle only processes new history entries.
  *
- * Returns { messages, compressed } — compressed=true if Haiku compression was triggered.
+ * Returns { messages, compressed, tokensBefore, tokensAfter, messagesCompressed } — compressed=true if Haiku compression was triggered.
  */
 export async function compressConversationIfNeeded(
   chatId: string,
@@ -99,7 +99,7 @@ export async function compressConversationIfNeeded(
   systemPrompt: string,
   messages: MessageParam[],
   tools: Tool[],
-): Promise<{ messages: MessageParam[]; compressed: boolean }> {
+): Promise<{ messages: MessageParam[]; compressed: boolean; tokensBefore?: number; tokensAfter?: number; messagesCompressed?: number }> {
   // Load the existing summary from DB (if any) and inject it as a read-only header
   const existingSummary = await getConversationSummary(chatId);
   let baseMessages = messages;
@@ -123,7 +123,7 @@ export async function compressConversationIfNeeded(
   // Precise check only when near threshold
   const preciseTokens = await countTokensPrecise(client, model, systemPrompt, baseMessages, tools);
   if (preciseTokens < COMPRESSION_TRIGGER_TOKENS) {
-    return { messages: baseMessages, compressed: false };
+    return { messages: baseMessages, compressed: false, tokensBefore: preciseTokens };
   }
 
   logger.info({ chatId, preciseTokens }, "Context compression triggered");
@@ -135,7 +135,7 @@ export async function compressConversationIfNeeded(
 
   if (!oldMessages.length) {
     // Nothing to compress (all entries are recent)
-    return { messages: baseMessages, compressed: false };
+    return { messages: baseMessages, compressed: false, tokensBefore: preciseTokens };
   }
 
   // Build the text to summarise — fold in the existing summary so context accumulates
@@ -172,11 +172,11 @@ export async function compressConversationIfNeeded(
     summary = textBlock && textBlock.type === "text" ? textBlock.text.trim() : "";
   } catch (err) {
     logger.error({ err, chatId }, "Haiku compression call failed — skipping compression");
-    return { messages: baseMessages, compressed: false };
+    return { messages: baseMessages, compressed: false, tokensBefore: preciseTokens };
   }
 
   if (!summary) {
-    return { messages: baseMessages, compressed: false };
+    return { messages: baseMessages, compressed: false, tokensBefore: preciseTokens };
   }
 
   // Upsert summary in DB (one row per chatId)
@@ -196,6 +196,7 @@ export async function compressConversationIfNeeded(
           summary,
           messageCount: oldMessages.length,
           tokenEstimate: preciseTokens,
+          compressionCount: sql`conversation_summaries.compression_count + 1`,
           updatedAt: new Date(),
         },
       });
@@ -211,12 +212,14 @@ export async function compressConversationIfNeeded(
     ...recentMessages,
   ];
 
+  const tokensAfter = estimateTokens(systemPrompt + JSON.stringify(compressedMessages) + JSON.stringify(tools));
+
   logger.info(
-    { chatId, from: baseMessages.length, to: compressedMessages.length, savedTokens: preciseTokens },
+    { chatId, from: baseMessages.length, to: compressedMessages.length, tokensBefore: preciseTokens, tokensAfter, messagesCompressed: oldMessages.length },
     "Conversation compressed successfully",
   );
 
-  return { messages: compressedMessages, compressed: true };
+  return { messages: compressedMessages, compressed: true, tokensBefore: preciseTokens, tokensAfter, messagesCompressed: oldMessages.length };
 }
 
 // ---- Cleanup ----------------------------------------------------------------
