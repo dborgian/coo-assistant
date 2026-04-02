@@ -22,6 +22,19 @@ export async function takeScreenshot(
   });
   try {
     await page.goto(url, { waitUntil: "networkidle", timeout: 30_000 });
+
+    // Detect redirect to login/auth pages (Google, Notion, etc.)
+    const finalUrl = page.url();
+    const isLoginPage =
+      finalUrl.includes("accounts.google.com") ||
+      finalUrl.includes("login.microsoftonline.com") ||
+      finalUrl.includes("notion.so/login") ||
+      finalUrl.includes("slack.com/signin") ||
+      (finalUrl.includes("?next=") && finalUrl.includes("login"));
+    if (isLoginPage) {
+      throw new Error(`La pagina richiede autenticazione — lo screenshot mostrerebbe solo la pagina di login. Usa gli strumenti specifici (Google Drive, Notion, ecc.) per accedere a contenuti protetti.`);
+    }
+
     const buffer = await page.screenshot({
       fullPage: opts?.fullPage ?? false,
       type: "png",

@@ -885,7 +885,7 @@ ${JSON.stringify(data, null, 2)}`;
     },
     {
       name: "take_screenshot",
-      description: "Take a screenshot of any URL (webpage, Notion page, Google Doc, app dashboard, etc.) and attach it to the response. Only works with publicly accessible URLs.",
+      description: "Take a screenshot of a publicly accessible URL and attach it to the response. IMPORTANT: does NOT work for Google Docs, Google Drive, Notion, Slack, or any page that requires login — those will redirect to a login screen. For Google Docs/Drive content use search_drive or get_calendar_events; for Notion use notion_action.",
       input_schema: {
         type: "object" as const,
         properties: {
