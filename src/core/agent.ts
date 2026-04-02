@@ -1171,16 +1171,29 @@ ${JSON.stringify(data, null, 2)}`;
 
         // daily
         const today = new Date().toISOString().split("T")[0];
-        const [activeTasks, doneTasks, allMsgs] = await Promise.all([
+        const [activeTasks, doneTasks, allMsgs, allEmpsForReport] = await Promise.all([
           db.select().from(tasks).where(inArray(tasks.status, ["pending", "in_progress"])),
           db.select().from(tasks).where(eq(tasks.status, "done")),
           db.select().from(messageLogs).where(sql`${messageLogs.receivedAt}::date = ${today}`),
+          db.select({ id: employees.id, name: employees.name }).from(employees).where(eq(employees.isActive, true)),
         ]);
+        const empNameById = new Map(allEmpsForReport.map((e) => [e.id, e.name]));
         const overdueTasks = activeTasks.filter((t) => t.dueDate && new Date(t.dueDate) < new Date());
-        const [calEvts, emails] = await Promise.all([
+
+        // Fetch owner calendar + all employees' calendars and merge (deduplicate by event id)
+        const [ownerEvts, teamEventsData, emails] = await Promise.all([
           getTodayEvents().catch(() => []),
+          getTeamEvents().catch(() => []),
           getUnreadImportantEmails(5).catch(() => []),
         ]);
+        const seenEventIds = new Set<string>(ownerEvts.map((e) => e.id));
+        const calEvts = [...ownerEvts];
+        for (const { events } of teamEventsData) {
+          for (const e of events) {
+            if (!seenEventIds.has(e.id)) { calEvts.push(e); seenEventIds.add(e.id); }
+          }
+        }
+
         const slackMsgs = allMsgs.filter((m) => m.source === "slack");
         const notionData = isNotionConfigured() ? await getNotionWorkspaceSummary().catch(() => null) : null;
 
@@ -1188,7 +1201,7 @@ ${JSON.stringify(data, null, 2)}`;
           date: today,
           calendar_events: calEvts.map((e) => ({ summary: e.summary, start: e.start, end: e.end })),
           important_emails: emails.map((e) => ({ from: e.from, subject: e.subject, snippet: e.snippet })),
-          tasks: activeTasks.map((t) => ({ title: t.title, status: t.status, priority: t.priority, due: t.dueDate })),
+          tasks: activeTasks.map((t) => ({ title: t.title, status: t.status, priority: t.priority, due: t.dueDate, assignee: empNameById.get(t.assignedTo ?? "") ?? null })),
           slack_messages: slackMsgs.length,
         });
 
@@ -1201,7 +1214,7 @@ ${JSON.stringify(data, null, 2)}`;
           taskCount: activeTasks.length, overdueCount: overdueTasks.length, doneCount: doneTasks.length,
           slackMsgCount: slackMsgs.length, emailCount: emails.length, calendarCount: calEvts.length,
           notionTaskCount: notionData?.tasks.length ?? 0,
-          taskList: activeTasks.map((t) => ({ title: t.title, status: t.status, priority: t.priority, due: t.dueDate })),
+          taskList: activeTasks.map((t) => ({ title: t.title, status: t.status, priority: t.priority, due: t.dueDate, assignee: empNameById.get(t.assignedTo ?? "") ?? null })),
           msgBySource: Array.from(srcCount, ([s, v]) => ({ label: s, value: v, color: srcColors[s] ?? "#888888" })),
         });
         const fileName = `daily-report-${today}.pdf`;

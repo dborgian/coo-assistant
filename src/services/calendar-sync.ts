@@ -94,7 +94,7 @@ function getDayBoundaries(dateStr: string): { dayStart: Date; dayEnd: Date } {
 }
 
 export async function getTodayEvents(authOverride?: GoogleAuth | null, calendarId = "primary", dateStr?: string): Promise<CalendarEvent[]> {
-  const auth = authOverride ?? getGoogleAuth();
+  const auth = authOverride === undefined ? getGoogleAuth() : authOverride;
   if (!auth) return [];
 
   const calendar = google.calendar({ version: "v3", auth });

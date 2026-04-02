@@ -186,8 +186,9 @@ function drawTaskTable(doc: PDFKit.PDFDocument, taskList: any[]): void {
   if (!taskList.length) { doc.fontSize(9).text("  Nessun task.", MARGIN); return; }
 
   ensureSpace(doc, 40);
-  const cols = [60, 50, CONTENT_W - 60 - 50 - 80, 80];
-  const headers = ["Status", "Priority", "Title", "Due Date"];
+  const assigneeCol = 70;
+  const cols = [55, 45, assigneeCol, CONTENT_W - 55 - 45 - assigneeCol - 75, 75];
+  const headers = ["Status", "Priority", "Assigned To", "Title", "Due Date"];
 
   // Header row
   doc.save();
@@ -212,8 +213,9 @@ function drawTaskTable(doc: PDFKit.PDFDocument, taskList: any[]): void {
     doc.text(t.status ?? "?", rx, ry, { width: cols[0] }); rx += cols[0];
     const pColor = (t.priority === "urgent" || t.priority === "high") ? C.red : C.muted;
     doc.fillColor(pColor).text(t.priority ?? "-", rx, ry, { width: cols[1] }); rx += cols[1];
-    doc.fillColor(C.black).text((t.title ?? "").slice(0, 55), rx, ry, { width: cols[2] }); rx += cols[2];
-    doc.fillColor(C.muted).text(t.due ? fmtDate(t.due) : "-", rx, ry, { width: cols[3] });
+    doc.fillColor(C.blue).text((t.assignee ?? "-").slice(0, 12), rx, ry, { width: cols[2] }); rx += cols[2];
+    doc.fillColor(C.black).text((t.title ?? "").slice(0, 45), rx, ry, { width: cols[3] }); rx += cols[3];
+    doc.fillColor(C.muted).text(t.due ? fmtDate(t.due) : "-", rx, ry, { width: cols[4] });
     doc.fillColor(C.black);
     doc.y = ry + 14;
   }
@@ -244,7 +246,7 @@ export interface DailyReportData {
   emailCount: number;
   calendarCount: number;
   notionTaskCount: number;
-  taskList: { title: string; status: string | null; priority: string | null; due: Date | null }[];
+  taskList: { title: string; status: string | null; priority: string | null; due: Date | null; assignee?: string | null }[];
   msgBySource: { label: string; value: number; color: string }[];
 }
 
