@@ -13,7 +13,7 @@ export const TOOL_PERMISSIONS: Record<string, AccessRole[]> = {
   // READ (admin+): access broader data
   search_drive: ["owner", "admin"],
   get_report_history: ["owner", "admin"],
-  get_slack_summary: ["owner"],
+  get_slack_summary: ["owner", "admin"],
 
   // WRITE: modify system state
   create_task: ["owner", "admin"],

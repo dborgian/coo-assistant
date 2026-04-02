@@ -281,6 +281,19 @@ async function handleSlackQuery(
   }
 }
 
+/** Re-scan Slack for channels the bot is a member of. Safe to call periodically. */
+export async function refreshBotChannels(): Promise<void> {
+  if (!slackApp) return;
+  const convos = await slackApp.client.conversations.list({ types: "public_channel,private_channel", limit: 200 });
+  for (const ch of convos.channels ?? []) {
+    if (ch.is_member && ch.id && ch.name) {
+      botChannels.set(ch.id, ch.name);
+      channelNameCache.set(ch.id, ch.name);
+    }
+  }
+  logger.info({ channelCount: botChannels.size, channels: [...botChannels.values()] }, "Slack channels refreshed");
+}
+
 export async function startSlackMonitor(): Promise<boolean> {
   if (!config.SLACK_BOT_TOKEN || !config.SLACK_APP_TOKEN) {
     logger.warn("Slack credentials not configured — Slack monitoring disabled");
@@ -305,18 +318,7 @@ export async function startSlackMonitor(): Promise<boolean> {
   registerDraftApprovals(slackApp);
 
   // Auto-discover channels the bot is a member of
-  try {
-    const convos = await slackApp.client.conversations.list({ types: "public_channel,private_channel", limit: 200 });
-    for (const ch of convos.channels ?? []) {
-      if (ch.is_member && ch.id && ch.name) {
-        botChannels.set(ch.id, ch.name);
-        channelNameCache.set(ch.id, ch.name);
-      }
-    }
-    logger.info({ channelCount: botChannels.size, channels: [...botChannels.values()] }, "Slack channels auto-discovered");
-  } catch (err) {
-    logger.debug({ err }, "Failed to auto-discover Slack channels");
-  }
+  await refreshBotChannels().catch((err) => logger.debug({ err }, "Failed to auto-discover Slack channels"));
 
   // FIX 10: Cache bot user ID BEFORE registering message handlers to avoid @mention race at startup
   try {
@@ -479,6 +481,11 @@ export async function startSlackMonitor(): Promise<boolean> {
 
   await slackApp.start();
 
+  // Refresh channel list every 30 minutes so newly joined channels are discovered
+  setInterval(() => {
+    refreshBotChannels().catch((err) => logger.warn({ err }, "Periodic Slack channel refresh failed"));
+  }, 30 * 60 * 1000);
+
   logger.info(
     { monitoredChannels: config.MONITORED_SLACK_CHANNELS },
     "Slack monitoring active",
@@ -570,6 +577,16 @@ async function handleSlackMessage(
     channelName,
   );
 
+  // Resolve senderId → employeeId for analytics
+  let resolvedEmployeeId: string | null = null;
+  if (senderId) {
+    try {
+      const [emp] = await db.select({ id: employees.id })
+        .from(employees).where(eq(employees.slackMemberId, senderId)).limit(1);
+      resolvedEmployeeId = emp?.id ?? null;
+    } catch { /* non-critical */ }
+  }
+
   // Store with source="slack" (full content + thread awareness)
   const [insertedMsg] = await db.insert(messageLogs)
     .values({
@@ -577,6 +594,7 @@ async function handleSlackMessage(
       chatTitle: `#${channelName}`,
       senderName,
       senderId: senderId ?? null,
+      employeeId: resolvedEmployeeId,
       content: messageText.slice(0, 500),
       fullContent: messageText.length > 500 ? messageText : null,
       threadTs: threadTs ?? null,
@@ -764,6 +782,9 @@ export interface SlackMessageMatch {
   userName: string;
   text: string;
   permalink?: string;
+  isThreadReply?: boolean;
+  parentTs?: string;
+  source?: "api" | "db"; // "db" when from messageLogs fallback
 }
 
 export interface SearchSlackOpts {
@@ -849,7 +870,56 @@ export async function searchSlackMessages(opts: SearchSlackOpts): Promise<SlackM
           userName,
           text: msg.text,
           permalink,
+          source: "api",
         });
+
+        // Also search thread replies if this message has any
+        if (results.length < limit && (msg as any).reply_count > 0) {
+          try {
+            const thread = await (slackApp.client.conversations.replies as Function)({
+              channel: chId, ts: msg.ts, limit: 50,
+            });
+            const replies: Array<{ ts: string; user?: string; text?: string }> = (thread.messages ?? []).slice(1); // skip parent
+            for (const reply of replies) {
+              if (results.length >= limit) break;
+              if (!reply.text || !reply.ts) continue;
+              if (queryLower && !reply.text.toLowerCase().includes(queryLower)) continue;
+
+              let replyUser = "unknown";
+              if (reply.user) {
+                if (userNameCache.has(reply.user)) {
+                  replyUser = userNameCache.get(reply.user)!;
+                } else {
+                  try {
+                    const info = await (slackApp.client.users.info as Function)({ user: reply.user });
+                    replyUser = info.user?.real_name ?? info.user?.name ?? reply.user;
+                    userNameCache.set(reply.user, replyUser);
+                  } catch { replyUser = reply.user; }
+                }
+              }
+              if (fromUserLower && !replyUser.toLowerCase().includes(fromUserLower)) continue;
+
+              let replyPermalink: string | undefined;
+              try {
+                const pl = await (slackApp.client.chat.getPermalink as Function)({ channel: chId, message_ts: reply.ts });
+                replyPermalink = pl.permalink;
+              } catch { /* optional */ }
+
+              results.push({
+                channelId: chId,
+                channelName: chName,
+                messageTs: reply.ts,
+                userId: reply.user ?? "",
+                userName: replyUser,
+                text: reply.text,
+                permalink: replyPermalink,
+                isThreadReply: true,
+                parentTs: msg.ts,
+                source: "api",
+              });
+            }
+          } catch { /* thread replies optional */ }
+        }
       }
     } catch (err) {
       logger.warn({ err, channel: chId }, "Failed to search Slack channel history");

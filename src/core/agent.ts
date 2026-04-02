@@ -1126,21 +1126,50 @@ ${JSON.stringify(data, null, 2)}`;
       }
 
       if (name === "search_slack_message") {
-        const matches = await searchSlackMessages({
+        const lim = input.limit ?? 5;
+        let matches = await searchSlackMessages({
           query: input.query,
           fromUser: input.from_user,
           channelId: input.channel_id,
           channelName: input.channel_name,
-          limit: input.limit ?? 5,
+          limit: lim,
         });
+
+        // DB fallback: if API returned nothing, search messageLogs for historical messages
         if (!matches.length) {
+          const conditions: any[] = [eq(messageLogs.source, "slack")];
+          if (input.from_user) conditions.push(sql`${messageLogs.senderName} ILIKE ${"%" + input.from_user + "%"}`);
+          if (input.query) conditions.push(sql`(${messageLogs.content} ILIKE ${"%" + input.query + "%"} OR ${messageLogs.fullContent} ILIKE ${"%" + input.query + "%"})`);
+          if (input.channel_name) conditions.push(sql`${messageLogs.chatTitle} ILIKE ${"%" + input.channel_name + "%"}`);
+          const dbResults = await db.select({
+            chatTitle: messageLogs.chatTitle,
+            senderName: messageLogs.senderName,
+            content: messageLogs.content,
+            fullContent: messageLogs.fullContent,
+            messageTs: messageLogs.messageTs,
+            threadTs: messageLogs.threadTs,
+            receivedAt: messageLogs.receivedAt,
+          }).from(messageLogs).where(and(...conditions)).orderBy(desc(messageLogs.receivedAt)).limit(lim);
+
+          if (dbResults.length) {
+            const lines = dbResults.map((m, i) => {
+              const text = (m.fullContent ?? m.content ?? "").slice(0, 120);
+              const threadInfo = m.threadTs ? ` | thread_ts: ${m.threadTs}` : "";
+              const tsInfo = m.messageTs ? ` | message_ts: ${m.messageTs}` : "";
+              return `${i + 1}. [${m.chatTitle ?? "canale"}] ${m.senderName ?? "?"}: "${text}"\n   (storico DB — nessun permalink)${tsInfo}${threadInfo}`;
+            });
+            return `Trovati ${dbResults.length} messaggi (dal DB storico):\n${lines.join("\n")}`;
+          }
+
           const who = input.from_user ? ` da "${input.from_user}"` : "";
           const where = input.channel_name ? ` in #${input.channel_name}` : input.channel_id ? ` nel canale ${input.channel_id}` : "";
-          return `Nessun messaggio trovato${who}${where}.`;
+          return `Nessun messaggio trovato${who}${where} (né nella cronologia recente né nello storico).`;
         }
+
         const lines = matches.map((m, i) => {
+          const threadLabel = m.isThreadReply ? ` [risposta nel thread di ${m.parentTs}]` : "";
           const meta = `channel_id: ${m.channelId} | message_ts: ${m.messageTs}${m.permalink ? ` | permalink: ${m.permalink}` : ""}`;
-          return `${i + 1}. [#${m.channelName}] ${m.userName}: "${m.text.slice(0, 120)}"\n   ${meta}`;
+          return `${i + 1}. [#${m.channelName}] ${m.userName}${threadLabel}: "${m.text.slice(0, 120)}"\n   ${meta}`;
         });
         return `Trovati ${matches.length} messaggi:\n${lines.join("\n")}`;
       }
@@ -2345,14 +2374,35 @@ Genera 5-10 task concreti e actionable.`,
     ]);
 
     const recentSlackMessages = await db.select().from(messageLogs)
-      .where(and(eq(messageLogs.source, "slack"), sql`${messageLogs.receivedAt} > now() - interval '24 hours'`));
+      .where(and(eq(messageLogs.source, "slack"), sql`${messageLogs.receivedAt} > now() - interval '24 hours'`))
+      .orderBy(desc(messageLogs.receivedAt))
+      .limit(100);
 
     context.employees = allEmployees.map((e) => ({ id: e.id, name: e.name, role: e.role }));
     context.clients = allClients.map((c) => ({ id: c.id, name: c.name, company: c.company }));
     context.active_tasks = activeTasks.map((t) => ({ id: t.id, title: t.title, status: t.status, priority: t.priority, due: t.dueDate }));
     context.calendar_events_today = calendarEvents.map((e) => ({ summary: e.summary, start: e.start, end: e.end, location: e.location }));
     context.unread_important_emails = importantEmails.map((e) => ({ from: e.from, subject: e.subject, snippet: e.snippet }));
-    context.recent_slack_messages = recentSlackMessages.map((m) => ({ channel: m.chatTitle, sender: m.senderName, urgency: m.urgency, summary: m.content.slice(0, 200), received: m.receivedAt }));
+    // Group Slack messages by thread for better AI comprehension
+    const threadMap = new Map<string, typeof recentSlackMessages>();
+    for (const m of recentSlackMessages) {
+      const key = m.threadTs ?? m.messageTs ?? m.id; // thread_ts groups replies with parent
+      if (!threadMap.has(key)) threadMap.set(key, []);
+      threadMap.get(key)!.push(m);
+    }
+    context.recent_slack_messages = [...threadMap.values()].map((msgs) => {
+      const first = msgs[0];
+      if (msgs.length === 1) {
+        return { channel: first.chatTitle, sender: first.senderName, urgency: first.urgency, text: (first.fullContent ?? first.content ?? "").slice(0, 400), received: first.receivedAt };
+      }
+      return {
+        channel: first.chatTitle,
+        thread_participants: [...new Set(msgs.map((m) => m.senderName).filter(Boolean))],
+        urgency: msgs.map((m) => m.urgency).includes("critical") ? "critical" : msgs.map((m) => m.urgency).includes("high") ? "high" : first.urgency,
+        messages: msgs.map((m) => ({ sender: m.senderName, text: (m.fullContent ?? m.content ?? "").slice(0, 300), ts: m.receivedAt })),
+        received: first.receivedAt,
+      };
+    });
     context.notion_tasks = notionData?.tasks.map((t) => ({ title: t.title, status: t.status, priority: t.priority, assignee: t.assignee, due: t.dueDate, overdue: t.isOverdue })) ?? [];
     context.notion_projects = notionData?.projects.map((p) => ({ name: p.name, status: p.status, owner: p.owner })) ?? [];
     context.drive_files = driveFiles.map((f) => ({ name: f.name, link: f.webViewLink, created: f.createdTime }));
