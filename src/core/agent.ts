@@ -1207,7 +1207,8 @@ ${JSON.stringify(data, null, 2)}`;
           calendarByPerson.push({ person: ownerName, events: ownerEvts.map((e) => ({ summary: e.summary, start: e.start ?? null, end: e.end ?? null })) });
         }
         for (const { employee: empName, events: empEvts } of teamEventsData) {
-          const filtered = empEvts.filter((e) => !seenEventIds.has(e.id) === false || ownerEvts.every((o) => o.id !== e.id));
+          if (empName === ownerName) continue; // owner already added above
+          const filtered = empEvts.filter((e) => !seenEventIds.has(e.id));
           if (filtered.length) {
             calendarByPerson.push({ person: empName, events: filtered.map((e) => ({ summary: e.summary, start: e.start ?? null, end: e.end ?? null })) });
           }
