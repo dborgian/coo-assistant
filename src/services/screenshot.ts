@@ -11,7 +11,7 @@ async function getBrowser(): Promise<Browser> {
   if (!browser || !browser.isConnected()) {
     browser = await chromium.launch({
       headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
     });
     logger.info("Playwright Chromium browser launched");
   }
@@ -66,7 +66,18 @@ export async function takeScreenshot(
   try {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
     await page.waitForLoadState("networkidle").catch(() => {});
-    await page.waitForTimeout(2000);
+
+    // Adaptive wait: check for meaningful content, retry up to 4x (max 8s)
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const hasContent = await page.evaluate(() => {
+        const body = document.body;
+        if (!body) return false;
+        const appRoot = body.querySelector("main, #app, #root, [role='main'], .app, article");
+        return appRoot ? appRoot.scrollHeight > 100 : body.scrollHeight > 200;
+      });
+      if (hasContent) break;
+      await page.waitForTimeout(2000);
+    }
 
     // Detect redirect to login/auth pages — inform user, don't crash
     const finalUrl = page.url();
@@ -75,12 +86,22 @@ export async function takeScreenshot(
       finalUrl.includes("login.microsoftonline.com") ||
       finalUrl.includes("notion.so/login") ||
       finalUrl.includes("slack.com/signin") ||
+      finalUrl.includes("app.slack.com/ssb/signin") ||
       (finalUrl.includes("?next=") && finalUrl.includes("login"));
     if (isLoginPage) {
       const userHint = opts?.slackUserId
         ? `Esegui: npm run browser:login -- --user ${opts.slackUserId}`
         : "Esegui: npm run browser:login -- --user <tuo_slack_id>";
       throw new Error(`La pagina richiede autenticazione. Per abilitare screenshot di pagine private: ${userHint}`);
+    }
+
+    // Content check: if page body is still empty after all waits, report it
+    const bodyText = await page.evaluate(() => document.body?.innerText?.trim() ?? "");
+    if (bodyText.length < 10) {
+      const userHint = opts?.slackUserId
+        ? `Esegui: npm run browser:login -- --user ${opts.slackUserId}`
+        : "Esegui: npm run browser:login -- --user <tuo_slack_id>";
+      throw new Error(`La pagina sembra vuota o non caricata — probabilmente richiede autenticazione. ${userHint}`);
     }
 
     const buffer = await page.screenshot({
