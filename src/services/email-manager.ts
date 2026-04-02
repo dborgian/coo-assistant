@@ -187,6 +187,7 @@ export async function sendEmail(
   body: string,
   authOverride?: GoogleAuth | null,
   cc?: string,
+  attachments?: Attachment[],
 ): Promise<boolean> {
   const auth = authOverride ?? getGoogleAuth();
   if (!auth) {
@@ -206,6 +207,11 @@ export async function sendEmail(
   const fromAddress = authOverride === undefined && config.EMAIL_FROM_ADDRESS
     ? config.EMAIL_FROM_ADDRESS
     : null;
+
+  // Delegate to MIME multipart builder when attachments are present
+  if (attachments?.length) {
+    return sendMimeWithAttachments(gmail, to, encodedSubject, body, attachments, fromAddress ?? undefined, cc);
+  }
 
   const rawMessage = [
     fromAddress ? `From: ${fromAddress}` : null,
@@ -458,7 +464,7 @@ function extractPlainText(payload: any): string {
   return "";
 }
 
-interface Attachment {
+export interface Attachment {
   filename: string;
   mimeType: string;
   data: Buffer;
@@ -496,6 +502,7 @@ async function sendMimeWithAttachments(
   body: string,
   attachments: Attachment[],
   fromAddress?: string,
+  cc?: string,
 ): Promise<boolean> {
   const boundary = `boundary_${Date.now()}`;
 
@@ -522,6 +529,7 @@ async function sendMimeWithAttachments(
   const rawMessage = [
     fromAddress ? `From: ${fromAddress}` : null,
     `To: ${to}`,
+    cc ? `Cc: ${cc}` : null,
     `Subject: ${subject}`,
     `Content-Type: multipart/mixed; boundary="${boundary}"`,
     "",

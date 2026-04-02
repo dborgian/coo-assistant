@@ -6,7 +6,7 @@ import { clients, dailyReports, employees, intelligenceEvents, messageLogs, task
 import { logger } from "../utils/logger.js";
 import { getTodayEvents, getTeamEvents } from "../services/calendar-sync.js";
 import { sendTieredNotification, getTargetLevel } from "../services/task-reminder.js";
-import { getUnreadImportantEmails, sendEmail, searchEmails, forwardEmail, replyToEmail } from "../services/email-manager.js";
+import { getUnreadImportantEmails, sendEmail, searchEmails, forwardEmail, replyToEmail, type Attachment as EmailAttachment } from "../services/email-manager.js";
 import { getNotionWorkspaceSummary, isNotionConfigured, createNotionTask, searchNotion, updateNotionTaskStatus, discoverNotionUsers, extractNotionPageId } from "../services/notion-sync.js";
 import { parseDateKeywords, findEmployeeInQuery, getActivityByDateRange, getEmployeeActivity } from "../services/history-query.js";
 import { takeScreenshot } from "../services/screenshot.js";
@@ -361,6 +361,7 @@ ${JSON.stringify(data, null, 2)}`;
           body: { type: "string", description: "Email body text" },
           cc_name: { type: "string", description: "CC recipient name(s) — comma-separated for multiple. Resolves from DB (preferred)" },
           cc: { type: "string", description: "CC email address(es) — comma-separated for multiple. Use only for external addresses not in DB" },
+          attach_files: { type: "boolean", description: "When true, attaches all previously generated files (PDF reports, screenshots) to the email" },
         },
         required: ["subject", "body"],
       },
@@ -1127,10 +1128,22 @@ ${JSON.stringify(data, null, 2)}`;
           ccAddress = ccResult.join(", ");
         }
 
-        const sent = await sendEmail(toAddress, input.subject, input.body, userAuth, ccAddress);
+        let emailAttachments: EmailAttachment[] | undefined;
+        if (input.attach_files && collectedFiles?.length) {
+          emailAttachments = collectedFiles.map((f) => ({
+            filename: f.filename,
+            mimeType: f.filename.endsWith(".pdf") ? "application/pdf"
+                    : f.filename.endsWith(".png") ? "image/png"
+                    : "application/octet-stream",
+            data: f.buffer,
+          }));
+        }
+
+        const sent = await sendEmail(toAddress, input.subject, input.body, userAuth, ccAddress, emailAttachments);
         const ccInfo = ccAddress ? ` (CC: ${ccAddress})` : "";
+        const attInfo = emailAttachments?.length ? ` con ${emailAttachments.length} allegato/i (${emailAttachments.map((a) => a.filename).join(", ")})` : "";
         return sent
-          ? `Email inviata a ${toAddress}${ccInfo} con oggetto "${input.subject}".`
+          ? `Email inviata a ${toAddress}${ccInfo}${attInfo} con oggetto "${input.subject}".`
           : `Invio email fallito a ${toAddress} — verifica la configurazione Google (serve il scope gmail.send).`;
       }
 
