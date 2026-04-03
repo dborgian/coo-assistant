@@ -421,12 +421,12 @@ ${JSON.stringify(data, null, 2)}`;
     },
     {
       name: "manage_team",
-      description: "Manage team members and clients. Add new employees/clients or list existing ones.",
+      description: "Manage team members and clients. Add, remove (soft-delete), or list employees/clients.",
       input_schema: {
         type: "object" as const,
         properties: {
-          action: { type: "string", enum: ["add_employee", "list_employees", "add_client", "list_clients"], description: "Action to perform" },
-          name: { type: "string", description: "Name (for add actions)" },
+          action: { type: "string", enum: ["add_employee", "list_employees", "remove_employee", "add_client", "list_clients", "remove_client"], description: "Action to perform" },
+          name: { type: "string", description: "Name (for add/remove actions)" },
           email: { type: "string", description: "Email address (optional)" },
           role: { type: "string", description: "Role (for employees)" },
           company: { type: "string", description: "Company (for clients)" },
@@ -1451,6 +1451,29 @@ ${JSON.stringify(data, null, 2)}`;
           await db.insert(clients).values({ name: input.name, company: input.company ?? null, email: input.email ?? null });
           return `Client "${input.name}" aggiunto con successo.${input.company ? ` Azienda: ${input.company}.` : ""}`;
         }
+        if (action === "remove_employee") {
+          if (!input.name) return "Nome richiesto per rimuovere un employee.";
+          const [emp] = await db.select({ id: employees.id, name: employees.name })
+            .from(employees)
+            .where(and(sql`${employees.name} ILIKE ${"%" + input.name + "%"}`, eq(employees.isActive, true)))
+            .limit(1);
+          if (!emp) return `Employee "${input.name}" non trovato tra i dipendenti attivi.`;
+          await db.update(employees).set({ isActive: false, updatedAt: new Date() }).where(eq(employees.id, emp.id));
+          // De-assign active tasks so they don't remain blocked
+          await db.update(tasks).set({ assignedTo: null, updatedAt: new Date() })
+            .where(and(eq(tasks.assignedTo, emp.id), inArray(tasks.status, ["pending", "in_progress"])));
+          return `Employee "${emp.name}" disattivato. I suoi task attivi sono stati de-assegnati.`;
+        }
+        if (action === "remove_client") {
+          if (!input.name) return "Nome richiesto per rimuovere un client.";
+          const [client] = await db.select({ id: clients.id, name: clients.name })
+            .from(clients)
+            .where(and(sql`${clients.name} ILIKE ${"%" + input.name + "%"}`, eq(clients.isActive, true)))
+            .limit(1);
+          if (!client) return `Client "${input.name}" non trovato tra i clienti attivi.`;
+          await db.update(clients).set({ isActive: false, updatedAt: new Date() }).where(eq(clients.id, client.id));
+          return `Client "${client.name}" disattivato.`;
+        }
         return `Azione "${action}" non riconosciuta.`;
       }
 
@@ -1470,7 +1493,7 @@ ${JSON.stringify(data, null, 2)}`;
           if (!input.priority) notionMissingFields.push("priorita' (default: media)");
           if (!input.due_date) notionMissingFields.push("scadenza (default: nessuna)");
           if (!input.assignee) notionMissingFields.push("assegnatario (default: nessuno)");
-          if (notionMissingFields.length >= 2 && !input.confirmed) {
+          if (notionMissingFields.length >= 1 && !input.confirmed) {
             return `Prima di creare il task "${input.title}" su Notion, mancano alcune informazioni:\n` +
               notionMissingFields.map((f) => `- ${f}`).join("\n") +
               `\n\nVuoi procedere con i default o preferisci specificarli?`;
