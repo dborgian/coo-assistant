@@ -19,6 +19,8 @@ export const TOOL_PERMISSIONS: Record<string, AccessRole[]> = {
   create_task: ["owner", "admin"],
   update_task_status: ["owner", "admin"],
   edit_task: ["owner", "admin"],
+  delete_tasks: ["owner", "admin"],
+  get_task_history: ["owner", "admin"],
   create_recurring_task: ["owner", "admin"],
   set_task_dependency: ["owner", "admin"],
   snooze_escalation: ["owner", "admin"],

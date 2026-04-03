@@ -176,6 +176,8 @@ function drawNarrative(doc: PDFKit.PDFDocument, text: string): void {
 
     // ALL-CAPS section header
     if (/^[A-Z][A-Z\s\/]{4,}$/.test(line)) { drawSection(doc, line); continue; }
+    // Numbered section header: "1. TITLE" or "1. Title"
+    if (/^\d+\.\s+\S/.test(line)) { drawSection(doc, line.replace(/^\d+\.\s+/, "")); continue; }
     // Markdown header
     if (/^#{1,3}\s/.test(line)) { drawSection(doc, line.replace(/^#+\s*/, "")); continue; }
     // Bold line

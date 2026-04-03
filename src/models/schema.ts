@@ -90,6 +90,32 @@ export const tasks = pgTable("tasks", {
   uniqueIndex("idx_tasks_external").on(t.source, t.externalId).where(sql`external_id IS NOT NULL`),
 ]);
 
+export const taskHistory = pgTable("task_history", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  originalTaskId: uuid("original_task_id").notNull(),
+  title: text("title").notNull(),
+  description: text("description"),
+  status: text("status"),
+  priority: text("priority"),
+  assignedTo: uuid("assigned_to"),          // NO FK — sopravvive a delete employee
+  assignedToName: text("assigned_to_name"), // denormalizzato
+  clientId: uuid("client_id"),
+  dueDate: timestamp("due_date", { withTimezone: true }),
+  source: text("source"),
+  externalId: text("external_id"),
+  estimatedMinutes: integer("estimated_minutes"),
+  calendarEventId: text("calendar_event_id"),
+  escalationLevel: integer("escalation_level"),
+  isRecurring: boolean("is_recurring"),
+  recurrencePattern: text("recurrence_pattern"),
+  blockedBy: text("blocked_by"),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }).defaultNow(),
+  deletedBy: text("deleted_by"),
+  deletionReason: text("deletion_reason"),
+  taskCreatedAt: timestamp("task_created_at", { withTimezone: true }),
+  taskUpdatedAt: timestamp("task_updated_at", { withTimezone: true }),
+});
+
 export const messageLogs = pgTable("message_logs", {
   id: uuid("id").primaryKey().defaultRandom(),
   source: text("source").notNull(), // telegram, slack, gmail
@@ -212,6 +238,14 @@ export const userMemory = pgTable("user_memory", {
   index("idx_user_memory_chat").on(t.chatId),
   uniqueIndex("idx_user_memory_chat_key").on(t.chatId, t.category, t.key),
 ]);
+
+// SQL migration (run manually on Supabase):
+// CREATE TABLE IF NOT EXISTS bot_config (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TIMESTAMPTZ DEFAULT NOW());
+export const botConfig = pgTable("bot_config", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+});
 
 export const conversationSummaries = pgTable("conversation_summaries", {
   id: uuid("id").primaryKey().defaultRandom(),

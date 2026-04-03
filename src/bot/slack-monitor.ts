@@ -3,7 +3,7 @@ import { and, eq, gte, sql } from "drizzle-orm";
 import { agent } from "../core/agent.js";
 import { config } from "../config.js";
 import { db } from "../models/database.js";
-import { clients, employees, intelligenceEvents, messageLogs, tasks } from "../models/schema.js";
+import { botConfig, clients, employees, intelligenceEvents, messageLogs, tasks } from "../models/schema.js";
 import { runInlineExtractors } from "../services/intelligence-pipeline.js";
 import { updateNotionTaskStatus } from "../services/notion-sync.js";
 import { completeGoogleTask } from "../services/google-tasks-sync.js";
@@ -26,6 +26,12 @@ const channelNameCache = new Map<string, string>();
 
 // Auto-discovered channels where the bot is a member
 const botChannels = new Map<string, string>(); // channelId → channelName
+
+// Per-channel timestamp of last proactive intervention (throttle: max 1/60s per channel)
+const proactiveLastAt = new Map<string, number>();
+const PROACTIVE_THROTTLE_MS = 60_000;
+
+const BOT_CONFIG_CHANNELS_KEY = "monitored_channels";
 
 /** Get the best channel for notifications (configured or first auto-discovered) */
 export function getNotificationsChannel(): string | null {
@@ -294,6 +300,33 @@ export async function refreshBotChannels(): Promise<void> {
   logger.info({ channelCount: botChannels.size, channels: [...botChannels.values()] }, "Slack channels refreshed");
 }
 
+/** Load monitored channels from DB and merge into config (called once at startup). */
+async function loadMonitoredChannels(): Promise<void> {
+  try {
+    const [row] = await db.select().from(botConfig).where(eq(botConfig.key, BOT_CONFIG_CHANNELS_KEY)).limit(1);
+    if (row?.value) {
+      const channels = JSON.parse(row.value) as string[];
+      for (const ch of channels) {
+        if (!config.MONITORED_SLACK_CHANNELS.includes(ch)) {
+          config.MONITORED_SLACK_CHANNELS.push(ch);
+        }
+      }
+      logger.info({ channels }, "Monitored channels loaded from DB");
+    }
+  } catch (err) {
+    logger.warn({ err }, "Failed to load monitored channels from DB — using env config only");
+  }
+}
+
+/** Persist current monitored channels list to DB (fire-and-forget). */
+function persistMonitoredChannels(): void {
+  const value = JSON.stringify(config.MONITORED_SLACK_CHANNELS);
+  db.insert(botConfig)
+    .values({ key: BOT_CONFIG_CHANNELS_KEY, value })
+    .onConflictDoUpdate({ target: botConfig.key, set: { value, updatedAt: new Date() } })
+    .catch((err) => logger.warn({ err }, "Failed to persist monitored channels to DB"));
+}
+
 export async function startSlackMonitor(): Promise<boolean> {
   if (!config.SLACK_BOT_TOKEN || !config.SLACK_APP_TOKEN) {
     logger.warn("Slack credentials not configured — Slack monitoring disabled");
@@ -316,6 +349,9 @@ export async function startSlackMonitor(): Promise<boolean> {
   registerOAuthCommands(slackApp);
   registerMeetingApprovals(slackApp);
   registerDraftApprovals(slackApp);
+
+  // Load persisted monitored channels from DB (merges with env config)
+  await loadMonitoredChannels();
 
   // Auto-discover channels the bot is a member of
   await refreshBotChannels().catch((err) => logger.debug({ err }, "Failed to auto-discover Slack channels"));
@@ -626,6 +662,11 @@ async function checkProactiveIntervention(
 ): Promise<void> {
   if (!slackApp) return;
 
+  // Throttle: at most one proactive intervention per channel per 60 seconds
+  const now = Date.now();
+  if (now - (proactiveLastAt.get(channelId) ?? 0) < PROACTIVE_THROTTLE_MS) return;
+  proactiveLastAt.set(channelId, now);
+
   // 1. Client mention — surface open tasks and project status
   const allClients = await db.select({ name: clients.name, id: clients.id }).from(clients).where(eq(clients.isActive, true));
   for (const client of allClients) {
@@ -693,12 +734,16 @@ export function getMonitoredSlackChannels(): string[] {
 export function addMonitoredSlackChannel(channelId: string): void {
   if (!config.MONITORED_SLACK_CHANNELS.includes(channelId)) {
     config.MONITORED_SLACK_CHANNELS.push(channelId);
+    persistMonitoredChannels();
   }
 }
 
 export function removeMonitoredSlackChannel(channelId: string): void {
   const idx = config.MONITORED_SLACK_CHANNELS.indexOf(channelId);
-  if (idx !== -1) config.MONITORED_SLACK_CHANNELS.splice(idx, 1);
+  if (idx !== -1) {
+    config.MONITORED_SLACK_CHANNELS.splice(idx, 1);
+    persistMonitoredChannels();
+  }
 }
 
 export async function sendSlackTaskNotification(
@@ -830,7 +875,7 @@ export async function searchSlackMessages(opts: SearchSlackOpts): Promise<SlackM
     try {
       const history = await (slackApp.client.conversations.history as Function)({
         channel: chId,
-        limit: 200,
+        limit: 50,
       });
       const messages: Array<{ ts: string; user?: string; text?: string }> = history.messages ?? [];
       for (const msg of messages) {

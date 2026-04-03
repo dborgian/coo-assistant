@@ -2,7 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { and, desc, eq, gte, ilike, inArray, lt, sql } from "drizzle-orm";
 import { config } from "../config.js";
 import { db } from "../models/database.js";
-import { clients, dailyReports, employees, intelligenceEvents, messageLogs, tasks } from "../models/schema.js";
+import { clients, dailyReports, employees, intelligenceEvents, messageLogs, taskHistory, tasks } from "../models/schema.js";
 import { logger } from "../utils/logger.js";
 import { getTodayEvents, getTeamEvents } from "../services/calendar-sync.js";
 import { sendTieredNotification, getTargetLevel } from "../services/task-reminder.js";
@@ -508,6 +508,33 @@ ${JSON.stringify(data, null, 2)}`;
       },
     },
     {
+      name: "get_task_history",
+      description: "Query the task history archive. Shows deleted tasks with their original details. Use when the user asks about deleted tasks, task history, or archived tasks (e.g. 'storico task di Marco', 'task eliminate questa settimana').",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          employee_name: { type: "string", description: "Filter by employee name (optional)" },
+          status: { type: "string", description: "Filter by task status at time of deletion: done, cancelled, pending, in_progress (optional)" },
+          days: { type: "number", description: "How many days back to look (default: 30)" },
+          limit: { type: "number", description: "Max results to return (default: 20)" },
+        },
+        required: [],
+      },
+    },
+    {
+      name: "delete_tasks",
+      description: "Bulk delete tasks by employee name and/or status. All deleted tasks are archived to task_history. Use when the user asks to delete multiple tasks at once (e.g. 'elimina tutte le task di Marco', 'rimuovi le task completate').",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          employee_name: { type: "string", description: "Employee name to filter tasks by assignee (optional)" },
+          status: { type: "string", enum: ["pending", "in_progress", "done", "cancelled"], description: "Filter by task status (optional)" },
+          confirmed: { type: "boolean", description: "Set to true to confirm bulk deletion after the preview step" },
+        },
+        required: [],
+      },
+    },
+    {
       name: "get_calendar_events",
       description: "Get calendar events for today. Can fetch for a specific employee by name, or for the entire team.",
       input_schema: {
@@ -967,13 +994,13 @@ ${JSON.stringify(data, null, 2)}`;
           } catch { /* non-critical — skip silently */ }
         }
 
-        // Check for missing key fields — ask user to confirm only if 2+ fields truly missing
+        // Check for missing key fields — ask user to confirm if any field is missing
         const missingFields: string[] = [];
         if (!input.priority) missingFields.push("priorita' (default: media)");
         if (!input.due_date) missingFields.push("scadenza (default: nessuna)");
         // Assignee only counts as missing if auto-assign also failed
         if (!input.assigned_to_name && !autoAssignedName) missingFields.push("assegnatario (default: nessuno)");
-        if (missingFields.length >= 2 && !input.confirmed) {
+        if (missingFields.length >= 1 && !input.confirmed) {
           const autoNote = autoAssignedName
             ? `\n💡 Assegnatario auto-selezionato: ${autoAssignedName} (workload ${autoAssignPct}%)`
             : "";
@@ -1593,7 +1620,10 @@ ${JSON.stringify(data, null, 2)}`;
             const ok = await archiveNotionPage(notionId);
             if (ok) {
               archivedTitles.push(found[0]?.title ?? input.title);
-              if (found[0]?.id) await db.delete(tasks).where(eq(tasks.id, found[0].id));
+              if (found[0]?.id) {
+                const [fullTask] = await db.select().from(tasks).where(eq(tasks.id, found[0].id)).limit(1);
+                if (fullTask) await this.archiveAndDeleteTask(fullTask, slackUserId ?? "unknown", "Deleted via notion_action");
+              }
             }
           }
 
@@ -1673,28 +1703,12 @@ ${JSON.stringify(data, null, 2)}`;
 
         if (input.action === "delete") {
           for (const t of matchingTasks) {
-            if (t.externalId?.startsWith("notion:")) {
-              const notionPageId = t.externalId.replace(/^notion(-done)?:/, "");
-              archiveNotionPage(notionPageId).catch((e) =>
-                logger.error({ err: e, notionPageId }, "Notion archive on delete failed"),
-              );
-            } else if (isNotionConfigured()) {
-              // No local externalId — search Notion by title and archive if found
-              searchNotion(t.title).then((results) => {
-                const match = results.find((r) => r.title.toLowerCase() === t.title.toLowerCase());
-                if (match) {
-                  const pageId = extractNotionPageId(match.url);
-                  if (pageId) archiveNotionPage(pageId).catch(() => {});
-                }
-              }).catch(() => {});
-            }
-            deleteGoogleTask(t.id).catch(() => {});
-            await db.delete(tasks).where(eq(tasks.id, t.id));
+            await this.archiveAndDeleteTask(t, slackUserId ?? "unknown", "Deleted via edit_task");
           }
           if (matchingTasks.length === 1) {
-            return `Task "${matchingTasks[0].title}" eliminato.`;
+            return `Task "${matchingTasks[0].title}" eliminato e archiviato.`;
           }
-          return `${matchingTasks.length} task eliminati: ${matchingTasks.map((t) => `"${t.title}"`).join(", ")}.`;
+          return `${matchingTasks.length} task eliminati e archiviati: ${matchingTasks.map((t) => `"${t.title}"`).join(", ")}.`;
         }
 
         const updates: Record<string, any> = { updatedAt: new Date() };
@@ -1738,6 +1752,89 @@ ${JSON.stringify(data, null, 2)}`;
           await rescheduleTask(task.id).catch(() => {});
         }
         return `Task "${task.title}" aggiornato con successo.${task.autoScheduled && (input.new_priority || input.new_due_date) ? " Il task verra' rischedulato nel calendario." : ""}`;
+      }
+
+      if (name === "get_task_history") {
+        const days = input.days ?? 30;
+        const limit = input.limit ?? 20;
+        const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+        const conditions: ReturnType<typeof eq>[] = [gte(taskHistory.deletedAt, cutoff)];
+
+        if (input.employee_name) {
+          conditions.push(sql`${taskHistory.assignedToName} ILIKE ${"%" + input.employee_name + "%"}`);
+        }
+        if (input.status) {
+          conditions.push(eq(taskHistory.status, input.status));
+        }
+
+        const rows = await db.select().from(taskHistory)
+          .where(and(...conditions))
+          .orderBy(desc(taskHistory.deletedAt))
+          .limit(limit);
+
+        if (!rows.length) return "Nessun task trovato nello storico con i filtri specificati.";
+
+        const lines = rows.map((r) => {
+          const deleted = r.deletedAt ? new Date(r.deletedAt).toLocaleDateString("it-IT") : "?";
+          const assignee = r.assignedToName ?? "non assegnato";
+          const reason = r.deletionReason ? ` (${r.deletionReason})` : "";
+          return `- "${r.title}" | ${r.status ?? "?"} | ${r.priority ?? "?"} | ${assignee} | eliminato: ${deleted}${reason}`;
+        });
+
+        return `Storico task (${rows.length} risultati, ultimi ${days} giorni):\n${lines.join("\n")}`;
+      }
+
+      if (name === "delete_tasks") {
+        if (!input.employee_name && !input.status) {
+          return "Specifica almeno un filtro: employee_name o status.";
+        }
+
+        const conditions: ReturnType<typeof eq>[] = [];
+
+        let empName: string | undefined;
+        if (input.employee_name) {
+          const [emp] = await db.select({ id: employees.id, name: employees.name })
+            .from(employees)
+            .where(sql`${employees.name} ILIKE ${"%" + input.employee_name + "%"}`)
+            .limit(1);
+          if (!emp) {
+            const allEmps = await db.select({ name: employees.name }).from(employees).where(eq(employees.isActive, true));
+            return `Dipendente "${input.employee_name}" non trovato. Dipendenti disponibili: ${allEmps.map((e) => e.name).join(", ")}`;
+          }
+          conditions.push(eq(tasks.assignedTo, emp.id));
+          empName = emp.name;
+        }
+
+        if (input.status) {
+          conditions.push(eq(tasks.status, input.status));
+        }
+
+        const matchingTasks = await db.select().from(tasks)
+          .where(conditions.length === 1 ? conditions[0] : and(...conditions));
+
+        if (!matchingTasks.length) {
+          return "Nessun task trovato con i filtri specificati.";
+        }
+
+        if (!input.confirmed) {
+          const preview = matchingTasks.slice(0, 10)
+            .map((t) => `- "${t.title}" (${t.status}, ${t.priority ?? "?"})`).join("\n");
+          const extra = matchingTasks.length > 10 ? `\n... e altri ${matchingTasks.length - 10}` : "";
+          return `Trovati ${matchingTasks.length} task da eliminare:\n${preview}${extra}\n\nTutti verranno archiviati in task_history. Confermi l'eliminazione?`;
+        }
+
+        let deleted = 0;
+        const reason = `Bulk delete: employee=${empName ?? "any"}, status=${input.status ?? "any"}`;
+        for (const t of matchingTasks) {
+          try {
+            await this.archiveAndDeleteTask(t, slackUserId ?? "unknown", reason);
+            deleted++;
+          } catch (e) {
+            logger.error({ err: e, taskId: t.id }, "Failed to archive+delete task in bulk");
+          }
+        }
+        return `${deleted} task eliminati e archiviati su ${matchingTasks.length} totali.`;
       }
 
       if (name === "get_calendar_events") {
@@ -2325,6 +2422,91 @@ Genera 5-10 task concreti e actionable.`,
       logger.error({ err, tool: name }, "Tool execution failed");
       return `Errore nell'esecuzione: ${err.message}`;
     }
+  }
+
+  private async archiveAndDeleteTask(
+    task: typeof tasks.$inferSelect,
+    deletedBy: string,
+    reason?: string,
+  ): Promise<void> {
+    // Resolve employee name for denormalization
+    let assignedToName: string | null = null;
+    if (task.assignedTo) {
+      const [emp] = await db.select({ name: employees.name })
+        .from(employees).where(eq(employees.id, task.assignedTo)).limit(1);
+      assignedToName = emp?.name ?? null;
+    }
+
+    // Archive snapshot to task_history
+    await db.insert(taskHistory).values({
+      originalTaskId: task.id,
+      title: task.title,
+      description: task.description,
+      status: task.status,
+      priority: task.priority,
+      assignedTo: task.assignedTo,
+      assignedToName,
+      clientId: task.clientId,
+      dueDate: task.dueDate,
+      source: task.source,
+      externalId: task.externalId,
+      estimatedMinutes: task.estimatedMinutes,
+      calendarEventId: task.calendarEventId,
+      escalationLevel: task.escalationLevel,
+      isRecurring: task.isRecurring,
+      recurrencePattern: task.recurrencePattern,
+      blockedBy: task.blockedBy,
+      deletedBy,
+      deletionReason: reason,
+      taskCreatedAt: task.createdAt,
+      taskUpdatedAt: task.updatedAt,
+    });
+
+    // Clear intelligenceEvents FK to avoid constraint violation
+    await db.update(intelligenceEvents)
+      .set({ linkedTaskId: null })
+      .where(eq(intelligenceEvents.linkedTaskId, task.id));
+
+    // Remove this task ID from blockedBy arrays in other tasks
+    const blockedTasks = await db.select().from(tasks)
+      .where(sql`${tasks.blockedBy} LIKE ${"%" + task.id + "%"}`);
+    for (const bt of blockedTasks) {
+      const deps: string[] = bt.blockedBy ? JSON.parse(bt.blockedBy) : [];
+      const remaining = deps.filter((d) => d !== task.id);
+      await db.update(tasks)
+        .set({ blockedBy: remaining.length ? JSON.stringify(remaining) : null, updatedAt: new Date() })
+        .where(eq(tasks.id, bt.id));
+    }
+
+    // Delete calendar event if present
+    if (task.calendarEventId) {
+      deleteCalendarEvent(task.calendarEventId).catch((e) =>
+        logger.error({ err: e, eventId: task.calendarEventId }, "Calendar event delete on task archive failed"));
+    }
+
+    // Clear recurrenceParentId on child recurring tasks
+    await db.update(tasks)
+      .set({ recurrenceParentId: null, updatedAt: new Date() })
+      .where(eq(tasks.recurrenceParentId, task.id));
+
+    // Archive Notion page
+    if (task.externalId?.startsWith("notion:")) {
+      const notionPageId = task.externalId.replace(/^notion(-done)?:/, "");
+      archiveNotionPage(notionPageId).catch((e) =>
+        logger.error({ err: e, notionPageId }, "Notion archive on task delete failed"));
+    } else if (isNotionConfigured()) {
+      searchNotion(task.title).then((results) => {
+        const match = results.find((r) => r.title.toLowerCase() === task.title.toLowerCase());
+        if (match) {
+          const pageId = extractNotionPageId(match.url);
+          if (pageId) archiveNotionPage(pageId).catch(() => {});
+        }
+      }).catch(() => {});
+    }
+
+    deleteGoogleTask(task.id).catch(() => {});
+
+    await db.delete(tasks).where(eq(tasks.id, task.id));
   }
 
   private async buildContextForRole(
